@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="description" content="ניטור רעש לילי: מקליט אוטומטית רק כשיש רעש, עם חותמת תאריך ושעה לכל אירוע, לבניית תיק ראיות.">
+<title>יומן רעש לילי</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel2: #263449; --text: #e2e8f0; --muted: #94a3b8;
+    --accent: #38bdf8; --ok: #22c55e; --warn: #f59e0b; --err: #ef4444; --border: #334155;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 16px; line-height: 1.45; }
+  body { padding: 0 16px calc(24px + env(safe-area-inset-bottom)); max-width: 720px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 6px; }
+  h1 { font-size: 1.35rem; margin: 0; }
+  #status { font-size: .9rem; padding: 4px 10px; border-radius: 999px; background: var(--panel2); color: var(--muted); white-space: nowrap; }
+  #status[data-state="on"] { background: #14532d; color: #bbf7d0; }
+  #status[data-state="err"] { background: #7f1d1d; color: #fecaca; }
+  #status[data-state="wait"] { background: #78350f; color: #fde68a; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin: 12px 0; }
+  .card h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  .ltr { direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); font-size: .9rem; }
+
+  /* מד רמה */
+  .meter { position: relative; height: 26px; background: #0b1220; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); direction: ltr; }
+  #meterFill { position: absolute; inset: 0 auto 0 0; width: 0; background: linear-gradient(90deg, #22c55e, #a3e635 60%, #f59e0b 80%, #ef4444); transition: width 80ms linear; }
+  #meterFill.hot { filter: brightness(1.25); }
+  #meterThr { position: absolute; top: 0; bottom: 0; width: 3px; background: #fff; opacity: .9; }
+  #meterPeak { position: absolute; top: 0; bottom: 0; width: 2px; background: #fde68a; opacity: .7; transition: right 100ms; }
+  .meter-row { display: flex; align-items: center; gap: 12px; }
+  .meter-row .meter { flex: 1; }
+  #meterVal { min-width: 2.6em; text-align: center; font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  .btn { appearance: none; border: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 12px 18px; border-radius: 12px; font-size: 1rem; cursor: pointer; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.primary { background: var(--accent); color: #082f49; border-color: transparent; font-weight: 700; }
+  .btn.stop { background: var(--err); color: #fff; border-color: transparent; font-weight: 700; }
+  .btn.small { padding: 8px 12px; font-size: .9rem; border-radius: 10px; }
+  .btn.danger { color: #fecaca; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .row.top { margin-top: 12px; }
+  .big { font-size: 1.15rem; padding: 16px 24px; flex: 1; }
+
+  .field { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--border); }
+  .field:last-child { border-bottom: 0; }
+  .field label { color: var(--text); }
+  .field small { display: block; color: var(--muted); font-size: .82rem; }
+  .field input[type="number"], .field select { width: 7.5em; background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 1rem; }
+  .field.full { grid-template-columns: 1fr; }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  #thresholdVal { font-weight: 700; }
+
+  #events { list-style: none; margin: 0; padding: 0; }
+  .event { border-top: 1px solid var(--border); padding: 12px 0; }
+  .event:first-child { border-top: 0; }
+  .ev-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .ev-time { font-size: 1.25rem; font-weight: 700; display: flex; gap: 10px; align-items: baseline; }
+  .ev-time small { color: var(--muted); font-weight: 400; font-size: .85rem; }
+  .ev-meta { display: flex; gap: 12px; color: var(--muted); font-size: .9rem; }
+  .ev-meta b { color: var(--text); }
+  .tag { background: #7f1d1d; color: #fecaca; padding: 1px 8px; border-radius: 999px; font-size: .8rem; }
+  .ev-actions { display: flex; gap: 8px; margin: 8px 0; }
+  .note { width: 100%; background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: .95rem; }
+  .player { margin-top: 8px; } .player audio { width: 100%; }
+  .empty { color: var(--muted); padding: 10px 0; }
+
+  #log { max-height: 220px; overflow: auto; font-size: .82rem; background: #0b1220; border-radius: 8px; padding: 8px; }
+  .log-line { padding: 2px 0; border-bottom: 1px solid #1e293b; }
+  .log-line b { color: var(--accent); }
+  .log-אזהרה b, .log-שגיאה b { color: var(--warn); }
+  .log-אירוע b { color: var(--ok); }
+
+  details.help summary { cursor: pointer; font-weight: 600; }
+  details.help ul { padding-inline-start: 20px; margin: 8px 0 0; }
+  details.help li { margin: 4px 0; }
+
+  #night { position: fixed; inset: 0; background: #000; z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; color: #333; }
+  #night[hidden] { display: none; }
+  #nightClock { font-size: 3rem; font-variant-numeric: tabular-nums; direction: ltr; }
+  #nightBar { width: 60%; height: 6px; background: #111; border-radius: 3px; overflow: hidden; direction: ltr; }
+  #nightLevel { height: 100%; width: 0; background: #234; }
+  #nightLevel.hot { background: #a33; }
+  #night p { margin: 0; font-size: .9rem; }
+  @media (prefers-color-scheme: light) { /* השארת ערכת צבעים כהה בכוונה – שימוש לילי */ }
+</style>
+</head>
+<body>
+<header>
+  <h1>יומן רעש לילי</h1>
+  <span id="status" data-state="off">טוען…</span>
+</header>
+
+<section class="card">
+  <div class="meter-row">
+    <div class="meter" aria-label="מד רמה">
+      <div id="meterFill"></div>
+      <div id="meterPeak" style="right:100%"></div>
+      <div id="meterThr" style="right:45%"></div>
+    </div>
+    <div id="meterVal">–</div>
+  </div>
+  <div class="muted">הקו הלבן = סף ההפעלה. כל מה שחוצה אותו נשמר כאירוע עם שעה מדויקת.</div>
+  <div class="row top">
+    <button id="startBtn" class="btn primary big">▶ התחל ניטור</button>
+    <button id="stopBtn" class="btn stop big" hidden>■ עצור</button>
+    <button id="nightBtn" class="btn" disabled title="מסך שחור עם שעון; הניטור ממשיך">🌙 מסך לילה</button>
+  </div>
+  <div class="muted" style="margin-top:8px">אירועים במפגש הנוכחי: <b id="nightCount">0</b></div>
+</section>
+
+<section class="card">
+  <h2>הגדרות</h2>
+  <div class="field full">
+    <label for="threshold">סף הפעלה: <span id="thresholdVal">55</span> <small>סולם יחסי 0–100. שקט בחדר בלילה בדרך כלל 20–40; דפיקה על קיר 60+. אם יש התראות שווא, הגבה. אם מפספס, הנמך.</small></label>
+    <input id="threshold" type="range" min="10" max="99" step="1" value="55">
+    <button id="calibrateBtn" class="btn small" style="justify-self:start">כיול אוטומטי (5 שנ׳ שקט)</button>
+  </div>
+  <div class="field"><label for="pre">שניות לפני הרעש<small>נשמרות מהזיכרון כדי לשמוע את ההתחלה</small></label><input id="pre" type="number" min="0" max="30" step="1"></div>
+  <div class="field"><label for="tail">שקט לסיום אירוע (שניות)<small>כמה זמן שקט סוגר את הקליפ</small></label><input id="tail" type="number" min="1" max="60" step="1"></div>
+  <div class="field"><label for="maxClip">אורך קליפ מרבי (שניות)<small>רעש ארוך יותר יפוצל לכמה קליפים</small></label><input id="maxClip" type="number" min="10" max="600" step="10"></div>
+  <div class="field"><label for="sampleRate">איכות הקלטה<small>16 kHz מספיק לדפיקות וגרירות וחוסך מקום</small></label>
+    <select id="sampleRate"><option value="16000">16 kHz (חסכוני)</option><option value="32000">32 kHz</option><option value="48000">48 kHz (מלא)</option></select></div>
+  <div class="field"><label for="keepAwake">השאר מסך דלוק בזמן ניטור<small>מומלץ. בטלפון: חבר למטען והשתמש ב"מסך לילה"</small></label><input id="keepAwake" type="checkbox"></div>
+</section>
+
+<section class="card">
+  <div class="row" style="justify-content:space-between">
+    <h2 style="margin:0">אירועים (<span id="eventCount">0</span>)</h2>
+    <select id="nightFilter" class="btn small"><option value="all">כל הלילות</option></select>
+  </div>
+  <ul id="events"></ul>
+  <div class="row top">
+    <button id="csvBtn" class="btn small">ייצוא CSV</button>
+    <button id="zipBtn" class="btn small">ייצוא ZIP (קליפים + CSV + יומן)</button>
+    <button id="clearBtn" class="btn small danger">מחק הכל</button>
+  </div>
+  <div id="storage" class="muted" style="margin-top:8px"></div>
+</section>
+
+<section class="card">
+  <h2>יומן פעולות</h2>
+  <div class="muted" style="margin-bottom:6px">מתעד מתי הניטור התחיל והופסק, ואזהרות על פערים. מיוצא יחד עם ה-ZIP כדי להראות שהניטור היה רציף.</div>
+  <div id="log"></div>
+</section>
+
+<section class="card">
+  <details class="help">
+    <summary>איך להשתמש ומה חשוב לדעת</summary>
+    <ul>
+      <li>הנח את המכשיר קרוב לקיר או לרצפה שמהם מגיע הרעש, מחובר למטען. השאר את הדף פתוח ולחץ "מסך לילה".</li>
+      <li>באנדרואיד: כבה "אופטימיזציית סוללה" לדפדפן (Chrome) בהגדרות האפליקציה, אחרת המערכת עלולה לעצור את ההקלטה.</li>
+      <li>באייפון: ההקלטה נעצרת כשהמסך ננעל. השאר את המסך דלוק (ההגדרה "השאר מסך דלוק" מטפלת בזה ב-Safari 16.4 ומעלה).</li>
+      <li>הכי אמין: מחשב נייד עם Chrome, מחובר לחשמל, עם כיבוי שינה אוטומטית.</li>
+      <li>הכל נשמר במכשיר בלבד. ייצא ZIP בבוקר ושמור עותק בענן או במחשב. מחיקת נתוני האתר בדפדפן מוחקת גם את ההקלטות.</li>
+      <li>הרמות הן בסולם יחסי ולא dB(A) מכויל. לצורך ראיה, החשוב הוא ההקלטה עצמה, השעה, והיומן הרציף.</li>
+      <li>הימנע מהקלטת שיחות של אחרים. האפליקציה מקליטה רק כשיש רעש מעל הסף, אבל האחריות על התוכן היא שלך.</li>
+    </ul>
+  </details>
+</section>
+
+<div id="night" hidden>
+  <div id="nightClock">00:00</div>
+  <div id="nightBar"><div id="nightLevel"></div></div>
+  <p>הניטור פעיל. הקש כדי לחזור.</p>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
