@@ -113,7 +113,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
   // ---- CSV עם עמודות מקור ----
   const csv = await page.evaluate(() => window.__noiseLog.eventsCsv(window.__noiseLog.events));
   const lines = csv.trim().split('\r\n');
-  assert(lines[0].endsWith(',מקור,היסט בהקלטה המקורית') && lines[0].includes('סיווג אוטומטי') && lines[1].includes('דפיקה') && lines[1].includes('night_2026-09-26_23-00-00.wav,00:00:05'), 'csv: kind, source and offset columns present');
+  assert(lines[0].includes(',מקור,היסט בהקלטה המקורית,מכשיר,Drive') && lines[0].includes('סיווג אוטומטי') && lines[1].includes('דפיקה') && lines[1].includes('night_2026-09-26_23-00-00.wav,00:00:05'), 'csv: kind, source and offset columns present');
   fs.writeFileSync(path.join(outDir, 'events-import.csv'), csv);
   const tags = await page.$$eval('#events .tag.file', (els) => els.length);
   assert(tags === (await page.evaluate(() => window.__noiseLog.events.length)), `ui: every imported event carries the file tag (${tags})`);

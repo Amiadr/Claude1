@@ -86,6 +86,10 @@
   .tag.kind-bang { background: #3f3f46; color: #e4e4e7; }
   .tag.kind-noise { background: #3f3f46; color: #e4e4e7; }
   .tag.kind-speech { background: #78350f; color: #fde68a; }
+  .tag.cloud { background: #164e63; color: #a5f3fc; }
+  .tag.pending { background: #1f2937; color: #9ca3af; }
+  .field input[type="text"] { width: 12em; max-width: 100%; background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 1rem; }
+  #driveStatus.error { color: #fecaca; }
   .ev-time input.sel { width: 20px; height: 20px; margin: 0 0 0 6px; accent-color: var(--accent); vertical-align: middle; }
   .bulk { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: #0b1220; border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
   .revlist { list-style: none; margin: 0; padding: 0; }
@@ -217,6 +221,22 @@
   <div id="storage" class="muted" style="margin-top:8px"></div>
 </section>
 
+<section class="card" id="driveCard">
+  <h2>☁️ Google Drive</h2>
+  <p class="muted" style="margin:0 0 10px">גיבוי של הקליפים שנשמרו לתיקייה ב-Drive לפי שנה וחודש, יומן סריקות משותף, וצפייה בקליפים שהועלו ממכשיר אחר. הסנכרון ידני: לוחצים כשרוצים. ההרשאה מוגבלת לקבצים שהאפליקציה יצרה.</p>
+  <div class="field"><label for="deviceName">שם המכשיר הזה<small>נשמר עם כל קליפ שמועלה, כדי לדעת מאיזה מכשיר הגיע</small></label><input id="deviceName" type="text" maxlength="40"></div>
+  <div class="field"><label for="driveFolder">תיקייה ב-Drive<small>נוצרת אוטומטית, עם תת-תיקיות שנה/חודש</small></label><input id="driveFolder" type="text" maxlength="60"></div>
+  <div class="field"><label for="googleClientId">Google Client ID<small>מהפרויקט שלך ב-Google Cloud (הוראות ב-README). אפשר גם לשמור ב-config.js</small></label><input id="googleClientId" type="text" class="ltr" placeholder="....apps.googleusercontent.com"></div>
+  <div class="row top">
+    <span id="driveAccount" class="muted">לא מחובר</span>
+    <button id="driveConnectBtn" class="btn">התחבר לגוגל</button>
+    <button id="driveDisconnectBtn" class="btn" hidden>התנתק</button>
+    <button id="driveSyncBtn" class="btn primary" disabled>⟳ סנכרן עכשיו</button>
+  </div>
+  <div id="driveStatus" class="muted" style="margin-top:8px"></div>
+  <div id="drivePending" class="muted"></div>
+</section>
+
 <section class="card">
   <h2>יומן פעולות</h2>
   <div class="muted" style="margin-bottom:6px">מתעד מתי הניטור התחיל והופסק, ואזהרות על פערים. מיוצא יחד עם ה-ZIP כדי להראות שהניטור היה רציף.</div>
@@ -244,7 +264,9 @@
   <p>הניטור פעיל. הקש כדי לחזור.</p>
 </div>
 
+<script src="config.js"></script>
 <script src="scan.js"></script>
+<script src="drive.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

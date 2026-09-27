@@ -6,7 +6,7 @@
   const $$ = (s) => Array.from(document.querySelectorAll(s));
 
   // ---------- הגדרות ----------
-  const DEFAULTS = { threshold: 55, pre: 3, tail: 3, maxClip: 120, sampleRate: 16000, keepAwake: true, skipSpeech: false };
+  const DEFAULTS = { threshold: 55, pre: 3, tail: 3, maxClip: 120, sampleRate: 16000, keepAwake: true, skipSpeech: false, deviceName: '', deviceId: '', driveFolder: 'יומן רעש', googleClientId: '' };
   const SETTINGS_KEY = 'noise-log-settings-v1';
   const settings = loadSettings();
 
@@ -21,18 +21,21 @@
   }
 
   // ---------- IndexedDB ----------
-  const DB_NAME = 'noise-log', DB_VER = 1;
+  const DB_NAME = 'noise-log', DB_VER = 2;
   let dbPromise = null;
   function openDb() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VER);
       req.onupgradeneeded = () => {
-        const db = req.result;
-        const ev = db.createObjectStore('events', { keyPath: 'id', autoIncrement: true });
-        ev.createIndex('startTs', 'startTs');
-        const lg = db.createObjectStore('log', { keyPath: 'id', autoIncrement: true });
-        lg.createIndex('ts', 'ts');
+        const db = req.result, tx = req.transaction;
+        let ev;
+        if (!db.objectStoreNames.contains('events')) { ev = db.createObjectStore('events', { keyPath: 'id', autoIncrement: true }); ev.createIndex('startTs', 'startTs'); }
+        else ev = tx.objectStore('events');
+        if (!ev.indexNames.contains('uid')) ev.createIndex('uid', 'uid');
+        if (!db.objectStoreNames.contains('log')) { const lg = db.createObjectStore('log', { keyPath: 'id', autoIncrement: true }); lg.createIndex('ts', 'ts'); }
+        if (!db.objectStoreNames.contains('scans')) db.createObjectStore('scans', { keyPath: 'id' });       // יומן סריקות (טווחי זמן שכבר כוסו)
+        if (!db.objectStoreNames.contains('tombstones')) db.createObjectStore('tombstones', { keyPath: 'uid' }); // אירועים שנמחקו, כדי שלא יחזרו מהסנכרון
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -71,7 +74,18 @@
   function nightLabel(key) { const d = new Date(key + 'T12:00:00'); const n = new Date(d.getTime() + 86400000); return `לילה ${pad(d.getDate())}–${pad(n.getDate())}.${pad(n.getMonth() + 1)}.${n.getFullYear()}`; }
   // תצוגת רמה: dBFS + 100 (סולם יחסי, לא מכויל ל-dB(A))
   const disp = (dbfs) => Math.max(0, dbfs + 100);
-  const fileName = (e) => `${fmtStamp(e.noiseTs)}_ev${e.id}.wav`;
+  const fileName = (e) => e.driveFileName || `${fmtStamp(e.noiseTs)}_ev${e.id}.wav`;
+  function uuid() { return crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = (Math.random() * 16) | 0; return (c === 'x' ? r : (r & 3) | 8).toString(16); }); }
+  function defaultDeviceName() { const ua = navigator.userAgent; if (/Android/i.test(ua)) return 'טלפון אנדרואיד'; if (/iPhone|iPad/i.test(ua)) return 'אייפון'; if (/Windows/i.test(ua)) return 'מחשב Windows'; if (/Mac/i.test(ua)) return 'מחשב Mac'; return 'מכשיר'; }
+  function deviceInfo() {
+    let changed = false;
+    if (!settings.deviceId) { settings.deviceId = uuid(); changed = true; }
+    if (!settings.deviceName) { settings.deviceName = defaultDeviceName(); changed = true; }
+    if (changed) saveSettings();
+    return { deviceId: settings.deviceId, deviceName: settings.deviceName };
+  }
+  function monthKey(ts) { const d = new Date(ts); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; }
+  const sanitizeName = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, '-').slice(0, 40);
 
   // ---------- זיהוי אירועים ----------
   class Detector {
@@ -201,11 +215,11 @@
   // ---------- CSV ----------
   function csvCell(v) { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
   function eventsCsv(list) {
-    const head = ['#', 'תאריך', 'שעת תחילת הרעש', 'תחילת הקליפ', 'סיום הקליפ', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'קליפ קטוע', 'סיווג אוטומטי', 'הערה', 'קובץ', 'מקור', 'היסט בהקלטה המקורית'];
+    const head = ['#', 'תאריך', 'שעת תחילת הרעש', 'תחילת הקליפ', 'סיום הקליפ', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'קליפ קטוע', 'סיווג אוטומטי', 'הערה', 'קובץ', 'מקור', 'היסט בהקלטה המקורית', 'מכשיר', 'Drive'];
     const rows = list.slice().sort((a, b) => a.noiseTs - b.noiseTs).map((e) => [
       e.id, fmtDate(e.noiseTs), fmtTimeMs(e.noiseTs), fmtTime(e.startTs), fmtTime(e.endTs),
       e.durationSec.toFixed(1), disp(e.peakDb).toFixed(1), disp(e.avgDb).toFixed(1), e.truncated ? 'כן' : '', KIND_LABEL[e.kind] || '', e.note || '', fileName(e),
-      e.source === 'file' ? e.sourceName : 'מיקרופון', e.source === 'file' ? fmtHms(e.offsetSec) : '']);
+      e.source === 'file' ? e.sourceName : 'מיקרופון', e.source === 'file' ? fmtHms(e.offsetSec) : '', e.deviceName || '', e.driveFileId ? (e.remote ? 'מ-Drive' : 'הועלה') : '']);
     return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
   function logCsv(list) {
@@ -285,6 +299,7 @@
     ctx = null; stream = null; procNode = null; srcNode = null; detector = null;
     if (wakeLock) { try { wakeLock.release(); } catch (e) { /* ignore */ } wakeLock = null; }
     log('סיום', `ניטור הופסק${fromError ? ' (בגלל תקלה)' : ''}. אירועים במפגש זה: ${sessionEvents}${skippedSpeech ? `. ${skippedSpeech} אירועים שנשמעו כדיבור לא נשמרו (סינון דיבור)` : ''}`);
+    if (sessionId) { const dev = deviceInfo(); dbPut('scans', { id: uuid(), type: 'live', startTs: sessionId, endTs: Date.now(), scannedAt: Date.now(), deviceId: dev.deviceId, deviceName: dev.deviceName, eventsSaved: sessionEvents, threshold: settings.threshold }).catch(() => {}); }
     if (!fromError) setStatus('לא מנטר', 'off');
     updateButtons();
     $('#meterFill').style.width = '0%'; $('#meterVal').textContent = '–';
@@ -336,7 +351,8 @@
     let kind = 'unknown';
     try { if (window.NoiseScan) kind = NoiseScan.classify(ev.samples, ev.sampleRate).kind; } catch (e) { /* ignore */ }
     if (kind === 'speech' && settings.skipSpeech) { skippedSpeech++; $('#nightSkipped').textContent = `לא נשמרו (דיבור אפשרי): ${skippedSpeech}`; return; }
-    const rec = { kind,
+    const dev = deviceInfo();
+    const rec = { kind, uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       startTs: ev.startTs, noiseTs: ev.noiseTs, endTs: ev.endTs, durationSec: ev.durationSec,
       peakDb: ev.peakDb, avgDb: ev.avgDb, sampleRate: ev.sampleRate, truncated: ev.truncated,
       note: '', sessionId, blob: encodeWav(ev.samples, ev.sampleRate),
@@ -444,6 +460,7 @@
             ${kindTag(e.kind)}
             ${e.truncated ? '<span class="tag">קטוע</span>' : ''}
             ${e.source === 'file' ? `<span class="tag file" title="${escapeHtml(e.sourceName || '')} @ ${fmtHms(e.offsetSec)}">מקובץ</span>` : ''}
+            ${cloudTag(e)}
           </div>
         </div>
         <div class="ev-actions">
@@ -456,7 +473,28 @@
       ul.appendChild(li);
     }
   }
-  function escapeHtml(s) { return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  function cloudTag(e) {
+    if (e.remote) return `<span class="tag cloud" title="הועלה ממכשיר אחר${e.blob ? ', יש עותק מקומי' : ', ינוגן מ-Drive'}">☁ מ-Drive · ${escapeHtml(e.deviceName || '')}</span>`;
+    if (e.driveFileId) return `<span class="tag cloud" title="${escapeHtml(e.driveFileName || '')}">☁ הועלה · ${escapeHtml(e.deviceName || '')}</span>`;
+    return driveConfigured() ? '<span class="tag pending" title="יועלה בסנכרון הבא">☁ ממתין</span>' : '';
+  }
+  async function ensureBlob(ev, btn) {
+    if (ev.blob) return ev.blob;
+    if (!ev.driveFileId) throw new Error('אין קובץ לאירוע הזה');
+    if (btn) btn.disabled = true;
+    try { ev.blob = await drive.download(ev.driveFileId); await dbPut('events', ev); renderEvents(); return ev.blob; }
+    finally { if (btn) btn.disabled = false; }
+  }
+  async function deleteEvent(ev, alsoDriveDecided) {
+    // מחיקה מקומית; אם האירוע הועלה, נשמרת "מצבה" כדי שהסנכרון לא יחזיר אותו, ואופציונלית נמחק גם מ-Drive
+    if (ev.uid && ev.driveFileId) {
+      const alsoDrive = ev.remote ? false : (alsoDriveDecided !== undefined ? alsoDriveDecided : confirm('למחוק גם את הקובץ מ-Drive? (ייעלם גם ממכשירים אחרים בסנכרון הבא). "ביטול" = למחוק רק מהמכשיר הזה.'));
+      await dbPut('tombstones', { uid: ev.uid, driveDelete: alsoDrive, fileId: ev.driveFileId, ts: Date.now(), done: false });
+    }
+    await dbDelete('events', ev.id);
+    events = events.filter((x) => x.id !== ev.id); selectedIds.delete(ev.id);
+  }
 
   $('#events').addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-act]'); if (!btn) return;
@@ -465,14 +503,17 @@
     if (btn.dataset.act === 'play') {
       const p = li.querySelector('.player');
       if (!p.hidden) { p.hidden = true; p.innerHTML = ''; return; }
-      const a = document.createElement('audio'); a.controls = true; a.src = URL.createObjectURL(ev.blob);
-      p.innerHTML = ''; p.appendChild(a); p.hidden = false; a.play().catch(() => {});
+      let blob; try { blob = await ensureBlob(ev, btn); } catch (err) { alert('לא ניתן להוריד מ-Drive: ' + err.message); return; }
+      const li2 = $(`#events li.event[data-id="${id}"]`) || li; const p2 = li2.querySelector('.player');
+      const a = document.createElement('audio'); a.controls = true; a.src = URL.createObjectURL(blob);
+      p2.innerHTML = ''; p2.appendChild(a); p2.hidden = false; a.play().catch(() => {});
     } else if (btn.dataset.act === 'download') {
-      downloadBlob(ev.blob, fileName(ev));
+      let blob; try { blob = await ensureBlob(ev, btn); } catch (err) { alert('לא ניתן להוריד מ-Drive: ' + err.message); return; }
+      downloadBlob(blob, fileName(ev));
     } else if (btn.dataset.act === 'delete') {
-      if (!confirm(`למחוק את האירוע מ-${fmtTime(ev.noiseTs)} ${fmtDate(ev.noiseTs)}?`)) return;
-      await dbDelete('events', id);
-      events = events.filter((x) => x.id !== id);
+      const q = ev.remote ? `להסיר מהמכשיר את האירוע מ-${fmtTime(ev.noiseTs)} ${fmtDate(ev.noiseTs)}? הקובץ ב-Drive יישאר.` : `למחוק את האירוע מ-${fmtTime(ev.noiseTs)} ${fmtDate(ev.noiseTs)}?`;
+      if (!confirm(q)) return;
+      await deleteEvent(ev);
       log('מידע', `אירוע ${id} נמחק ידנית`);
       renderEvents(); refreshStorage();
     }
@@ -483,7 +524,7 @@
     const inp = e.target.closest('input[data-act="note"]'); if (!inp) return;
     const id = Number(inp.closest('li.event').dataset.id);
     const ev = events.find((x) => x.id === id); if (!ev) return;
-    ev.note = inp.value.trim();
+    ev.note = inp.value.trim(); ev.updatedAt = Date.now();
     await dbPut('events', ev);
   });
 
@@ -519,7 +560,9 @@
         { name: 'log.csv', data: new TextEncoder().encode(logCsv(logAll)) },
         { name: 'README.txt', data: new TextEncoder().encode(readmeText(list)) },
       ];
-      for (const e of list.slice().sort((a, b) => a.noiseTs - b.noiseTs)) files.push({ name: 'clips/' + fileName(e), data: e.blob, date: new Date(e.noiseTs) });
+      const missing = list.filter((e) => !e.blob && e.driveFileId);
+      for (let i = 0; i < missing.length; i++) { btn.textContent = `מוריד מ-Drive ${i + 1}/${missing.length}…`; await ensureBlob(missing[i]); }
+      for (const e of list.slice().sort((a, b) => a.noiseTs - b.noiseTs)) if (e.blob) files.push({ name: 'clips/' + fileName(e), data: e.blob, date: new Date(e.noiseTs) });
       const zip = await makeZip(files);
       downloadBlob(zip, `noise-evidence_${currentFilter}_${fmtStamp(Date.now())}.zip`);
       log('מידע', `יוצא ZIP עם ${list.length} קליפים`);
@@ -630,7 +673,11 @@
     if (!imp || !imp.file) return;
     const startMs = currentStartMs();
     if (startMs === null) { alert('הזן את זמן תחילת ההקלטה.'); return; }
-    imp.startMs = startMs; imp.levels = null; imp.review = null;
+    imp.startMs = startMs; imp.levels = null; imp.review = null; imp.coverageChecked = false;
+    if (imp.info && imp.info.durationSec) {
+      if (!(await checkCoverage(startMs, startMs + imp.info.durationSec * 1000, imp.file))) return;
+      imp.coverageChecked = true;
+    }
     $('#impError').hidden = true; $('#impResult').hidden = true; $('#impReview').hidden = true; $('#impSaved').textContent = '';
     $('#impScanBtn').disabled = true; $('#impCancelBtn').hidden = false; setImpProgress(0, 'מתחיל…');
     log('ייבוא', `סורק את ${imp.file.name} (${fmtBytes(imp.file.size)}), תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)}`);
@@ -782,9 +829,9 @@
     if (!imp || !imp.review) return;
     const list = imp.review.filter((r) => r.selected);
     if (!list.length) return;
-    const dup = events.filter((e) => e.sourceName === imp.file.name).length;
-    if (dup && !confirm(`כבר יש ${dup} אירועים מהקובץ "${imp.file.name}". לייבא שוב (ייווצרו כפילויות)?`)) return;
     const startMs = currentStartMs() ?? imp.startMs; imp.startMs = startMs;
+    if (!imp.coverageChecked) { if (!(await checkCoverage(startMs, startMs + imp.durationSec * 1000, imp.file))) return; imp.coverageChecked = true; }
+    const dev = deviceInfo();
     const importId = Date.now(); let saved = 0;
     $('#impSaveBtn').disabled = true; setImpProgress(0, 'שומר קליפים…');
     const saveOne = async (e, samples, sampleRate) => {
@@ -792,6 +839,7 @@
         startTs: Math.round(startMs + e.startSec * 1000), noiseTs: Math.round(startMs + e.noiseSec * 1000), endTs: Math.round(startMs + e.endSec * 1000),
         durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind,
         sessionId: importId, source: 'file', sourceName: imp.file.name, offsetSec: e.noiseSec, blob: encodeWav(samples, sampleRate),
+        uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       };
       rec.id = await dbAdd('events', rec); events.push(rec); saved++;
       setImpProgress(saved / list.length, `שומר קליפים… ${saved}/${list.length}`);
@@ -808,6 +856,7 @@
       impError('השמירה נכשלה אחרי ' + saved + ' אירועים: ' + e.message); renderEvents(); refreshStorage(); return;
     }
     const skipped = imp.review.length - list.length;
+    try { await dbPut('scans', { id: uuid(), type: 'file', fileName: imp.file.name, fileSize: imp.file.size, fileLastModified: imp.file.lastModified || 0, startTs: startMs, endTs: Math.round(startMs + imp.durationSec * 1000), scannedAt: Date.now(), deviceId: dev.deviceId, deviceName: dev.deviceName, eventsSaved: saved, threshold: imp.threshold + 100 }); } catch (e) { /* ignore */ }
     log('ייבוא', `נשמרו ${saved} אירועים מהקובץ ${imp.file.name}${skipped ? ` (${skipped} הוסרו בסקירה)` : ''}. תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)} (${$('#impStartSrc').textContent.replace('מקור: ', '')}), סף ${imp.threshold + 100}`);
     $('#impProgress').hidden = true; $('#impSaveBtn').disabled = false;
     $('#impSaved').textContent = `נשמרו ${saved} אירועים. הם מופיעים ברשימת האירועים למטה, מסומנים "מקובץ".`;
@@ -835,10 +884,182 @@
     window.addEventListener('resize', () => { if (imp && imp.levels) drawTimeline(); });
   }
 
+  // ---------- Google Drive: גיבוי, שיתוף בין מכשירים, יומן סריקות ----------
+  const drive = window.DriveClient;
+  let syncing = false;
+  const driveCache = (() => { try { return JSON.parse(localStorage.getItem('noise-log-drive') || '{}'); } catch (e) { return {}; } })();
+  function saveDriveCache() { try { localStorage.setItem('noise-log-drive', JSON.stringify(driveCache)); } catch (e) { /* ignore */ } }
+  function clientId() { return settings.googleClientId || (window.NOISE_LOG_CONFIG && window.NOISE_LOG_CONFIG.googleClientId) || ''; }
+  function driveConfigured() { return !!(drive && (clientId() || drive.state.testToken)); }
+  function setDriveStatus(text, isErr) { const el = $('#driveStatus'); el.textContent = text; el.classList.toggle('error', !!isErr); }
+  function renderDriveUi() {
+    if (!drive) return;
+    const on = drive.isConnected();
+    $('#driveConnectBtn').hidden = on; $('#driveDisconnectBtn').hidden = !on;
+    $('#driveSyncBtn').disabled = !on || syncing;
+    $('#driveAccount').textContent = on ? `מחובר${drive.state.email ? ' כ-' + drive.state.email : ''}` : 'לא מחובר';
+    const pending = events.filter((e) => !e.remote && !e.driveFileId && e.blob).length;
+    $('#drivePending').textContent = on || driveConfigured() ? `${pending} אירועים ממתינים להעלאה${driveCache.lastSync ? ` · סנכרון אחרון ${fmtDate(driveCache.lastSync)} ${fmtTime(driveCache.lastSync)}` : ''}` : '';
+  }
+  async function driveConnect() {
+    drive.configure({ clientId: clientId() });
+    setDriveStatus('מתחבר…');
+    try { await drive.signIn(true); await drive.getEmail(); setDriveStatus('מחובר. לחץ "סנכרן עכשיו" כדי להעלות ולהוריד.'); log('Drive', 'התחברות לחשבון גוגל' + (drive.state.email ? ' ' + drive.state.email : '')); }
+    catch (e) { setDriveStatus('ההתחברות נכשלה: ' + e.message, true); }
+    renderDriveUi();
+  }
+  function driveDisconnect() { drive.signOut(); setDriveStatus('התנתקת. הקבצים ב-Drive נשארים.'); renderDriveUi(); }
+  async function driveRoot() {
+    const name = settings.driveFolder || 'יומן רעש';
+    if (driveCache.rootId && driveCache.rootName === name) {
+      try { const m = await drive.getMeta(driveCache.rootId, 'id,trashed'); if (!m.trashed) return driveCache.rootId; } catch (e) { /* ניצור מחדש */ }
+    }
+    const id = await drive.ensureFolder(name, 'root');
+    driveCache.rootId = id; driveCache.rootName = name; saveDriveCache();
+    return id;
+  }
+  async function driveMonthFolder(rootId, mk, cache) {
+    if (cache.has(mk)) return cache.get(mk);
+    const y = await drive.ensureFolder(mk.slice(0, 4), rootId);
+    const m = await drive.ensureFolder(mk, y);
+    cache.set(mk, m); return m;
+  }
+  // יומן הסריקות: מיזוג בין המכשיר ל-Drive (לפי id), נשמר כ-scan-log.json בתיקיית השורש
+  async function refreshScanLog(rootId) {
+    rootId = rootId || (await driveRoot());
+    const found = await drive.list(`name = 'scan-log.json' and '${rootId}' in parents and trashed = false`, 'files(id,name)');
+    let remote = [];
+    if (found.length) { try { remote = (await drive.getJson(found[0].id)).scans || []; } catch (e) { remote = []; } }
+    const local = await dbGetAll('scans');
+    const byId = new Map(remote.map((x) => [x.id, x]));
+    for (const x of remote) if (!local.some((l) => l.id === x.id)) await dbPut('scans', x);
+    let remoteChanged = !found.length && local.length > 0;
+    for (const l of local) if (!byId.has(l.id)) { byId.set(l.id, l); remoteChanged = true; }
+    const merged = Array.from(byId.values()).sort((a, b) => a.scannedAt - b.scannedAt);
+    if (remoteChanged) await drive.upload({ name: 'scan-log.json', mimeType: 'application/json', parents: found.length ? undefined : [rootId], appProperties: { noiseLogType: 'scanlog' } }, new Blob([JSON.stringify({ scans: merged }, null, 1)], { type: 'application/json' }), found.length ? found[0].id : undefined);
+    return merged;
+  }
+  // בדיקה לפני סריקה: האם הקובץ או טווח הזמן כבר נסרקו (במכשיר הזה או באחר)?
+  async function checkCoverage(startMs, endMs, file) {
+    let scans = [];
+    try { scans = await dbGetAll('scans'); } catch (e) { scans = []; }
+    if (drive && drive.isConnected()) { try { scans = await refreshScanLog(); } catch (e) { log('אזהרה', 'לא ניתן לרענן את יומן הסריקות מ-Drive: ' + e.message); } }
+    const exact = scans.filter((x) => x.type === 'file' && x.fileName === file.name && x.fileSize === file.size);
+    const overlap = scans.filter((x) => !exact.includes(x) && x.startTs < endMs && x.endTs > startMs);
+    if (!exact.length && !overlap.length) return true;
+    const desc = (x) => `${x.type === 'live' ? 'ניטור חי' : 'הקובץ ' + x.fileName} (${x.deviceName || 'מכשיר לא ידוע'}): ${fmtDate(x.startTs)} ${fmtTime(x.startTs)} עד ${fmtDate(x.endTs)} ${fmtTime(x.endTs)}, נסרק ב-${fmtDate(x.scannedAt)} ${fmtTime(x.scannedAt)}, נשמרו ${x.eventsSaved} אירועים`;
+    const lines = [];
+    if (exact.length) lines.push(`הקובץ הזה כבר נסרק:`, ...exact.map((x) => '• ' + desc(x)));
+    if (overlap.length) lines.push(`טווח הזמן ${fmtDate(startMs)} ${fmtTime(startMs)} עד ${fmtDate(endMs)} ${fmtTime(endMs)} חופף לסריקות קודמות:`, ...overlap.map((x) => '• ' + desc(x)));
+    lines.push('', 'לסרוק בכל זאת? האירועים החדשים יתווספו לצד הקיימים.');
+    return confirm(lines.join('\n'));
+  }
+  function driveClipName(e, dev) { return `${fmtStamp(e.noiseTs)}_${sanitizeName(e.deviceName || dev.deviceName) || 'device'}_${String(e.uid).slice(0, 6)}.wav`; }
+  function indexEntryOf(e) {
+    return { uid: e.uid, noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate: e.sampleRate, truncated: !!e.truncated,
+      kind: e.kind || '', note: e.note || '', source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0,
+      deviceId: e.deviceId || '', deviceName: e.deviceName || '', fileId: e.driveFileId || '', fileName: e.driveFileName || '', updatedAt: e.updatedAt || 0 };
+  }
+  function indexCsv(list) {
+    const head = ['תאריך', 'שעת תחילת הרעש', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'סיווג אוטומטי', 'הערה', 'מקור', 'היסט בהקלטה המקורית', 'מכשיר', 'קובץ ב-Drive'];
+    const rows = list.map((x) => [fmtDate(x.noiseTs), fmtTimeMs(x.noiseTs), (x.durationSec || 0).toFixed(1), disp(x.peakDb).toFixed(1), disp(x.avgDb).toFixed(1), KIND_LABEL[x.kind] || '', x.note || '', x.source === 'file' ? x.sourceName : 'מיקרופון', x.source === 'file' ? fmtHms(x.offsetSec) : '', x.deviceName || '', x.fileName || '']);
+    return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+  }
+  async function syncDrive() {
+    if (syncing || !drive) return;
+    syncing = true; renderDriveUi();
+    let uploaded = 0, added = 0, deleted = 0, removed = 0;
+    try {
+      drive.configure({ clientId: clientId() });
+      if (!drive.isConnected()) { setDriveStatus('מתחבר…'); await drive.signIn(true); }
+      await drive.getEmail();
+      const dev = deviceInfo();
+      const rootId = await driveRoot();
+      setDriveStatus('מעדכן יומן סריקות…'); await refreshScanLog(rootId);
+      // מצבות: מחיקות שהתבקשו גם ב-Drive
+      const tombs = await dbGetAll('tombstones');
+      for (const t of tombs) if (t.driveDelete && t.fileId && !t.done) { await drive.del(t.fileId); t.done = true; await dbPut('tombstones', t); deleted++; }
+      const tombUids = new Set(tombs.map((t) => t.uid));
+      // העלאת קליפים שטרם הועלו
+      const folderCache = new Map();
+      const pending = events.filter((e) => !e.remote && !e.driveFileId && e.blob);
+      for (const e of pending) {
+        setDriveStatus(`מעלה קליפ ${uploaded + 1}/${pending.length}…`);
+        if (!e.uid) e.uid = uuid();
+        e.deviceId = e.deviceId || dev.deviceId; e.deviceName = e.deviceName || dev.deviceName;
+        const mId = await driveMonthFolder(rootId, monthKey(e.noiseTs), folderCache);
+        const name = driveClipName(e, dev);
+        const f = await drive.upload({ name, mimeType: 'audio/wav', parents: [mId], description: `רעש ${fmtDate(e.noiseTs)} ${fmtTime(e.noiseTs)}, ${KIND_LABEL[e.kind] || ''}, ממכשיר ${e.deviceName}`, appProperties: { noiseLogType: 'clip', uid: e.uid, deviceId: e.deviceId, deviceName: String(e.deviceName).slice(0, 60), noiseTs: String(e.noiseTs), kind: e.kind || '' } }, e.blob);
+        e.driveFileId = f.id; e.driveFileName = name; e.driveSyncedAt = Date.now(); e.updatedAt = e.updatedAt || Date.now();
+        await dbPut('events', e); uploaded++;
+      }
+      // מיזוג אינדקסים חודשיים (אחד לכל חודש, משותף לכל המכשירים)
+      setDriveStatus('ממזג עם מכשירים אחרים…');
+      const remoteIdx = await drive.list(`appProperties has { key='noiseLogType' and value='index' } and trashed = false`, 'files(id,name,appProperties)');
+      const idxByMonth = new Map(remoteIdx.filter((f) => f.appProperties && f.appProperties.month).map((f) => [f.appProperties.month, f]));
+      const months = new Set([...events.filter((e) => e.driveFileId).map((e) => monthKey(e.noiseTs)), ...idxByMonth.keys()]);
+      for (const mk of months) {
+        const idxFile = idxByMonth.get(mk);
+        let entries = [];
+        if (idxFile) { try { entries = (await drive.getJson(idxFile.id)).events || []; } catch (e) { entries = []; } }
+        const byUid = new Map(entries.map((x) => [x.uid, x]));
+        let changed = !idxFile;
+        for (const e of events) {
+          if (!e.driveFileId || monthKey(e.noiseTs) !== mk) continue;
+          const cur = byUid.get(e.uid);
+          if (!cur) { if (!e.remote) { byUid.set(e.uid, indexEntryOf(e)); changed = true; } }
+          else if (!e.remote && (e.updatedAt || 0) > (cur.updatedAt || 0)) { byUid.set(e.uid, Object.assign({}, cur, indexEntryOf(e))); changed = true; }
+          else if (e.remote && (cur.updatedAt || 0) > (e.updatedAt || 0)) { e.note = cur.note || ''; e.kind = cur.kind || e.kind; e.updatedAt = cur.updatedAt; await dbPut('events', e); }
+        }
+        for (const t of tombs) if (t.driveDelete && byUid.has(t.uid)) { byUid.delete(t.uid); changed = true; }
+        for (const x of byUid.values()) {
+          if (!x.uid || tombUids.has(x.uid) || events.some((e) => e.uid === x.uid)) continue;
+          const rec = Object.assign({}, x, { remote: true, driveFileId: x.fileId, driveFileName: x.fileName, blob: null, note: x.note || '', sessionId: 0 });
+          delete rec.fileId; delete rec.fileName;
+          rec.id = await dbAdd('events', rec); events.push(rec); added++;
+        }
+        // אירועים שהגיעו מ-Drive ונמחקו שם על ידי מכשיר אחר – מוסרים גם כאן
+        if (idxFile) {
+          const gone = events.filter((e) => e.remote && monthKey(e.noiseTs) === mk && !byUid.has(e.uid));
+          for (const e of gone) { await dbDelete('events', e.id); removed++; }
+          if (gone.length) events = events.filter((e) => !gone.includes(e));
+        }
+        if (changed) {
+          const list = Array.from(byUid.values()).sort((a, b) => a.noiseTs - b.noiseTs);
+          const mId = await driveMonthFolder(rootId, mk, folderCache);
+          await drive.upload({ name: `events-${mk}.json`, mimeType: 'application/json', parents: idxFile ? undefined : [mId], appProperties: { noiseLogType: 'index', month: mk } }, new Blob([JSON.stringify({ month: mk, events: list }, null, 1)], { type: 'application/json' }), idxFile ? idxFile.id : undefined);
+          const csvFiles = await drive.list(`appProperties has { key='noiseLogType' and value='csv' } and appProperties has { key='month' and value='${mk}' } and trashed = false`, 'files(id)');
+          await drive.upload({ name: `events-${mk}.csv`, mimeType: 'text/csv', parents: csvFiles.length ? undefined : [mId], appProperties: { noiseLogType: 'csv', month: mk } }, new Blob([indexCsv(list)], { type: 'text/csv' }), csvFiles.length ? csvFiles[0].id : undefined);
+        }
+      }
+      driveCache.lastSync = Date.now(); saveDriveCache();
+      setDriveStatus(`הסנכרון הסתיים: הועלו ${uploaded}, התקבלו ${added} ממכשירים אחרים${deleted ? `, נמחקו מ-Drive ${deleted}` : ''}${removed ? `, הוסרו ${removed} שנמחקו במכשיר אחר` : ''}.`);
+      log('Drive', `סנכרון: הועלו ${uploaded}, התקבלו ${added}${deleted ? `, נמחקו ${deleted}` : ''} (תיקייה "${settings.driveFolder}")`);
+      renderEvents(); refreshStorage();
+    } catch (e) {
+      setDriveStatus('הסנכרון נכשל: ' + e.message, true);
+      log('שגיאה', 'Drive: ' + e.message + (uploaded ? ` (אחרי ${uploaded} העלאות)` : ''));
+      renderEvents();
+    } finally { syncing = false; renderDriveUi(); }
+  }
+  function bindDriveUi() {
+    const dev = deviceInfo();
+    $('#deviceName').value = dev.deviceName; $('#driveFolder').value = settings.driveFolder; $('#googleClientId').value = settings.googleClientId || '';
+    $('#deviceName').addEventListener('change', () => { settings.deviceName = $('#deviceName').value.trim() || defaultDeviceName(); $('#deviceName').value = settings.deviceName; saveSettings(); });
+    $('#driveFolder').addEventListener('change', () => { settings.driveFolder = $('#driveFolder').value.trim() || 'יומן רעש'; $('#driveFolder').value = settings.driveFolder; saveSettings(); renderDriveUi(); });
+    $('#googleClientId').addEventListener('change', () => { settings.googleClientId = $('#googleClientId').value.trim(); saveSettings(); renderDriveUi(); renderEvents(); });
+    $('#driveConnectBtn').addEventListener('click', driveConnect);
+    $('#driveDisconnectBtn').addEventListener('click', driveDisconnect);
+    $('#driveSyncBtn').addEventListener('click', syncDrive);
+    if (drive) { drive.configure({ clientId: clientId() }); if (drive.restore()) setDriveStatus('מחובר מהפעם הקודמת.'); }
+    renderDriveUi();
+  }
+
   // ---------- חיבור UI ----------
   function bindUi() {
     syncSettingsUi();
     bindImportUi();
+    bindDriveUi();
     $('#startBtn').addEventListener('click', startMonitoring);
     $('#stopBtn').addEventListener('click', () => stopMonitoring(false));
     $('#nightBtn').addEventListener('click', showNight);
@@ -855,8 +1076,11 @@
     $('#bulkDelete').addEventListener('click', async () => {
       const ids = Array.from(selectedIds); if (!ids.length) return;
       if (!confirm(`למחוק ${ids.length} אירועים מסומנים? הפעולה אינה הפיכה.`)) return;
-      for (const id of ids) { await dbDelete('events', id); }
-      events = events.filter((x) => !selectedIds.has(x.id)); selectedIds.clear();
+      const sel = events.filter((x) => selectedIds.has(x.id));
+      const synced = sel.filter((x) => x.driveFileId && !x.remote).length;
+      const alsoDrive = synced ? confirm(`${synced} מהם הועלו ל-Drive. למחוק אותם גם מ-Drive? "ביטול" = רק מהמכשיר הזה.`) : false;
+      for (const ev of sel) await deleteEvent(ev, alsoDrive);
+      selectedIds.clear();
       log('מידע', `${ids.length} אירועים הוסרו בסקירה ידנית (לא רלוונטיים)`);
       renderEvents(); refreshStorage();
     });
@@ -866,7 +1090,7 @@
     $('#zipBtn').addEventListener('click', exportZip);
     $('#clearBtn').addEventListener('click', async () => {
       if (!confirm('למחוק את כל האירועים והיומן מהמכשיר? פעולה זו אינה הפיכה. ודא שייצאת ZIP קודם.')) return;
-      await dbClear('events'); await dbClear('log');
+      await dbClear('events'); await dbClear('log'); await dbClear('scans');
       events = []; logLines.length = 0;
       renderEvents(); renderLog(); refreshStorage();
     });
@@ -884,17 +1108,19 @@
     }
     try {
       events = await dbGetAll('events');
+      const dev = deviceInfo();
+      for (const e of events) if (!e.uid) { e.uid = uuid(); e.deviceId = e.deviceId || dev.deviceId; e.deviceName = e.deviceName || dev.deviceName; e.updatedAt = e.updatedAt || e.noiseTs; await dbPut('events', e); }
       const oldLog = await dbGetAll('log');
       logLines.push(...oldLog.slice(-200));
     } catch (e) { setStatus('שגיאה בפתיחת האחסון המקומי: ' + e.message, 'err'); }
-    renderEvents(); renderLog(); refreshStorage(); updateButtons();
+    renderEvents(); renderLog(); refreshStorage(); updateButtons(); renderDriveUi();
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
   }
 
   // חשיפה לבדיקות אוטומטיות
-  window.__noiseLog = { get events() { return events; }, get monitoring() { return monitoring; }, get importState() { return imp; }, settings, eventsCsv, makeZip, dbGetAll, Detector, disp };
+  window.__noiseLog = { get events() { return events; }, get monitoring() { return monitoring; }, get importState() { return imp; }, settings, eventsCsv, makeZip, dbGetAll, Detector, disp, syncDrive, drive, get syncing() { return syncing; } };
 
   init();
 })();
