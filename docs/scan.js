@@ -519,6 +519,56 @@
     }
   }
 
+
+  // ---------- סיווג גס של קליפ: דפיקה / רעש רציף / ייתכן דיבור ----------
+  // מבוסס על מאפיינים אקוסטיים פשוטים (משך הקטע הרועש, אימפולסיביות, מחזוריות עם גובה צליל משתנה, מספר הברות).
+  // זה רמז לסקירה, לא זיהוי מדויק.
+  function classify(samples, sr) {
+    const factor = Math.max(1, Math.round(sr / 8000)); const r = sr / factor;
+    const n = Math.floor(samples.length / factor);
+    const empty = { kind: 'unknown', loudSec: 0, voicedFrac: 0, crestDb: 0, pitchVar: 0, onsets: 0 };
+    if (n < r * 0.1) return empty;
+    const x = new Float32Array(n);
+    let mean = 0;
+    for (let i = 0; i < n; i++) { let acc = 0; const o = i * factor; for (let k = 0; k < factor; k++) acc += samples[o + k]; x[i] = acc / factor; mean += x[i]; }
+    mean /= n; for (let i = 0; i < n; i++) x[i] -= mean;
+    const frame = Math.round(r * 0.03), hop = Math.round(r * 0.01);
+    const nf = Math.max(0, Math.floor((n - frame) / hop) + 1);
+    if (nf < 3) return empty;
+    const rms = new Float32Array(nf); let peakRms = 0, peakAbs = 0;
+    for (let f = 0; f < nf; f++) { let acc = 0; const o = f * hop; for (let i = 0; i < frame; i++) { const v = x[o + i]; acc += v * v; } rms[f] = Math.sqrt(acc / frame); if (rms[f] > peakRms) peakRms = rms[f]; }
+    for (let i = 0; i < n; i++) { const a = Math.abs(x[i]); if (a > peakAbs) peakAbs = a; }
+    const gate = peakRms * 0.1; // 20 dB מתחת לשיא
+    const minLag = Math.round(r / 400), maxLag = Math.round(r / 80); // גובה צליל 80–400 Hz
+    let loud = 0, voiced = 0, sumLoudRms = 0, onsets = 0, prevLoud = false; const lags = [];
+    for (let f = 0; f < nf; f++) {
+      const isLoud = rms[f] >= gate;
+      if (isLoud && !prevLoud) onsets++;
+      prevLoud = isLoud;
+      if (!isLoud) continue;
+      loud++; sumLoudRms += rms[f];
+      const o = f * hop; let best = 0, bestLag = 0, e0 = 0;
+      for (let i = 0; i < frame; i++) e0 += x[o + i] * x[o + i];
+      for (let lag = minLag; lag <= maxLag; lag++) {
+        let c = 0, e1 = 0;
+        for (let i = 0, m = frame - lag; i < m; i++) { c += x[o + i] * x[o + i + lag]; e1 += x[o + i + lag] * x[o + i + lag]; }
+        const v = c / Math.sqrt((e0 + 1e-12) * (e1 + 1e-12));
+        if (v > best) { best = v; bestLag = lag; }
+      }
+      if (best >= 0.6) { voiced++; lags.push(bestLag); }
+    }
+    const loudSec = (loud * hop) / r;
+    const voicedFrac = loud ? voiced / loud : 0;
+    const crestDb = 20 * Math.log10((peakAbs + 1e-9) / (sumLoudRms / Math.max(1, loud) + 1e-9));
+    let pitchVar = 0;
+    if (lags.length >= 5) { const m = lags.reduce((a, b) => a + b, 0) / lags.length; const v = lags.reduce((a, b) => a + (b - m) * (b - m), 0) / lags.length; pitchVar = Math.sqrt(v) / m; }
+    let kind;
+    if (loudSec <= 0.5 && crestDb >= 10) kind = 'bang';
+    else if (voicedFrac >= 0.35 && loudSec >= 0.4 && pitchVar >= 0.06 && onsets >= 2) kind = 'speech';
+    else kind = 'noise';
+    return { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets };
+  }
+
   async function open(file) {
     const kind = await sniff(file);
     if (kind === 'wav') return new WavScanner(file).open();
@@ -546,5 +596,5 @@
     return c;
   }
 
-  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
+  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
 })(typeof self !== 'undefined' ? self : globalThis);

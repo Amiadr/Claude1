@@ -100,6 +100,32 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
   assert(NS.dateFromName('Voice 001.m4a') === null, 'name: no date → null');
   assert(NS.dateFromName('2026-13-40 99-99.m4a') === null, 'name: invalid date rejected');
 
+
+  // ---- סיווג גס (על אותות סינתטיים) ----
+  {
+    const sr = 16000; const mk = (sec) => new Float32Array(Math.round(sec * sr));
+    const rnd = (() => { let st = 12345; return () => { st = (st * 1664525 + 1013904223) >>> 0; return st / 4294967296 - 0.5; }; })();
+    const gauss = () => { let a = 0; for (let k = 0; k < 12; k++) a += rnd(); return a; };
+    const bang = mk(4); for (let i = 0; i < bang.length; i++) bang[i] = 0.001 * gauss();
+    for (let i = 0; i < 0.15 * sr; i++) { const t = i / sr; bang[2 * sr + i] += 0.4 * Math.sin(2 * Math.PI * 120 * t) * Math.exp(-25 * t) + 0.15 * gauss() * Math.exp(-30 * t); }
+    const cb = NS.classify(bang, sr);
+    assert(cb.kind === 'bang', `classify: bang → ${cb.kind} (loud ${cb.loudSec.toFixed(2)}s, crest ${cb.crestDb.toFixed(1)} dB)`);
+    const drag = mk(6); for (let i = 0; i < drag.length; i++) drag[i] = 0.001 * gauss(); for (let i = 2 * sr; i < 4 * sr; i++) drag[i] = 0.056 * gauss();
+    const cd = NS.classify(drag, sr);
+    assert(cd.kind === 'noise', `classify: drag → ${cd.kind} (voiced ${cd.voicedFrac.toFixed(2)}, loud ${cd.loudSec.toFixed(2)}s)`);
+    const sp = mk(6.5); for (let i = 0; i < sp.length; i++) sp[i] = 0.001 * gauss();
+    { let phase = 0; for (let i = 0; i < 2.5 * sr; i++) { const t = i / sr; const f0 = 100 + 80 * (0.5 + 0.5 * Math.sin(2 * Math.PI * 0.7 * t)); phase += (2 * Math.PI * f0) / sr; let v = 0; for (let h = 1; h <= 12; h++) v += Math.sin(h * phase) / h; const syl = Math.pow(0.5 + 0.5 * Math.sin(2 * Math.PI * 4 * t), 2); sp[2 * sr + i] += 0.15 * v * syl; } }
+    const cs = NS.classify(sp, sr);
+    assert(cs.kind === 'speech', `classify: speech-like → ${cs.kind} (voiced ${cs.voicedFrac.toFixed(2)}, pitchVar ${cs.pitchVar.toFixed(2)}, onsets ${cs.onsets})`);
+    const ring = mk(5); for (let i = 0; i < ring.length; i++) ring[i] = 0.001 * gauss(); for (let i = 0; i < 1.5 * sr; i++) { const t = i / sr; ring[2 * sr + i] += 0.3 * Math.sin(2 * Math.PI * 120 * t) * Math.exp(-2 * t); }
+    const cr = NS.classify(ring, sr);
+    assert(cr.kind !== 'speech', `classify: ringing thump (constant 120 Hz) → ${cr.kind}, not speech (pitchVar ${cr.pitchVar.toFixed(3)}, onsets ${cr.onsets})`);
+    const hum = mk(5); for (let i = 0; i < hum.length; i++) hum[i] = 0.001 * gauss(); for (let i = 0; i < 3 * sr; i++) { const t = i / sr; hum[sr + i] += 0.1 * (Math.sin(2 * Math.PI * 100 * t) + 0.5 * Math.sin(2 * Math.PI * 200 * t) + 0.3 * Math.sin(2 * Math.PI * 300 * t)); }
+    const ch = NS.classify(hum, sr);
+    assert(ch.kind === 'noise', `classify: steady hum → ${ch.kind} (voiced ${ch.voicedFrac.toFixed(2)}, pitchVar ${ch.pitchVar.toFixed(3)})`);
+    const t0 = Date.now(); NS.classify(mk(120), sr); const ms = Date.now() - t0;
+    assert(ms < 3000, `classify: 120 s clip in ${ms} ms`);
+  }
   console.log(fails ? `\n${fails} FAILED` : '\nall passed');
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

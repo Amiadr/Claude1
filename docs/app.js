@@ -6,7 +6,7 @@
   const $$ = (s) => Array.from(document.querySelectorAll(s));
 
   // ---------- הגדרות ----------
-  const DEFAULTS = { threshold: 55, pre: 3, tail: 3, maxClip: 120, sampleRate: 16000, keepAwake: true };
+  const DEFAULTS = { threshold: 55, pre: 3, tail: 3, maxClip: 120, sampleRate: 16000, keepAwake: true, skipSpeech: false };
   const SETTINGS_KEY = 'noise-log-settings-v1';
   const settings = loadSettings();
 
@@ -201,10 +201,10 @@
   // ---------- CSV ----------
   function csvCell(v) { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
   function eventsCsv(list) {
-    const head = ['#', 'תאריך', 'שעת תחילת הרעש', 'תחילת הקליפ', 'סיום הקליפ', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'קליפ קטוע', 'הערה', 'קובץ', 'מקור', 'היסט בהקלטה המקורית'];
+    const head = ['#', 'תאריך', 'שעת תחילת הרעש', 'תחילת הקליפ', 'סיום הקליפ', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'קליפ קטוע', 'סיווג אוטומטי', 'הערה', 'קובץ', 'מקור', 'היסט בהקלטה המקורית'];
     const rows = list.slice().sort((a, b) => a.noiseTs - b.noiseTs).map((e) => [
       e.id, fmtDate(e.noiseTs), fmtTimeMs(e.noiseTs), fmtTime(e.startTs), fmtTime(e.endTs),
-      e.durationSec.toFixed(1), disp(e.peakDb).toFixed(1), disp(e.avgDb).toFixed(1), e.truncated ? 'כן' : '', e.note || '', fileName(e),
+      e.durationSec.toFixed(1), disp(e.peakDb).toFixed(1), disp(e.avgDb).toFixed(1), e.truncated ? 'כן' : '', KIND_LABEL[e.kind] || '', e.note || '', fileName(e),
       e.source === 'file' ? e.sourceName : 'מיקרופון', e.source === 'file' ? fmtHms(e.offsetSec) : '']);
     return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
@@ -223,7 +223,7 @@
   // ---------- ניטור ----------
   let ctx = null, stream = null, srcNode = null, procNode = null, silentGain = null;
   let monitoring = false, detector = null, wakeLock = null, watchdog = null;
-  let lastChunkAt = 0, sessionId = null, sessionEvents = 0, wakeLockWarned = false;
+  let lastChunkAt = 0, sessionId = null, sessionEvents = 0, skippedSpeech = 0, wakeLockWarned = false;
   let events = [];
 
   async function startMonitoring() {
@@ -260,7 +260,7 @@
     srcNode.connect(procNode); procNode.connect(silentGain);
 
     detector = new Detector(ctx.sampleRate, settings, saveEvent);
-    monitoring = true; sessionId = Date.now(); sessionEvents = 0; lastChunkAt = Date.now(); wakeLockWarned = false;
+    monitoring = true; sessionId = Date.now(); sessionEvents = 0; skippedSpeech = 0; lastChunkAt = Date.now(); wakeLockWarned = false;
     const track = stream.getAudioTracks()[0];
     const st = track.getSettings ? track.getSettings() : {};
     track.onended = () => { if (monitoring) { log('אזהרה', 'המיקרופון נותק על ידי המערכת'); setStatus('המיקרופון נותק – לחץ "התחל" שוב', 'err'); stopMonitoring(true); } };
@@ -284,7 +284,7 @@
     try { ctx && ctx.close(); } catch (e) { /* ignore */ }
     ctx = null; stream = null; procNode = null; srcNode = null; detector = null;
     if (wakeLock) { try { wakeLock.release(); } catch (e) { /* ignore */ } wakeLock = null; }
-    log('סיום', `ניטור הופסק${fromError ? ' (בגלל תקלה)' : ''}. אירועים במפגש זה: ${sessionEvents}`);
+    log('סיום', `ניטור הופסק${fromError ? ' (בגלל תקלה)' : ''}. אירועים במפגש זה: ${sessionEvents}${skippedSpeech ? `. ${skippedSpeech} אירועים שנשמעו כדיבור לא נשמרו (סינון דיבור)` : ''}`);
     if (!fromError) setStatus('לא מנטר', 'off');
     updateButtons();
     $('#meterFill').style.width = '0%'; $('#meterVal').textContent = '–';
@@ -333,7 +333,10 @@
   });
 
   async function saveEvent(ev) {
-    const rec = {
+    let kind = 'unknown';
+    try { if (window.NoiseScan) kind = NoiseScan.classify(ev.samples, ev.sampleRate).kind; } catch (e) { /* ignore */ }
+    if (kind === 'speech' && settings.skipSpeech) { skippedSpeech++; $('#nightSkipped').textContent = `לא נשמרו (דיבור אפשרי): ${skippedSpeech}`; return; }
+    const rec = { kind,
       startTs: ev.startTs, noiseTs: ev.noiseTs, endTs: ev.endTs, durationSec: ev.durationSec,
       peakDb: ev.peakDb, avgDb: ev.avgDb, sampleRate: ev.sampleRate, truncated: ev.truncated,
       note: '', sessionId, blob: encodeWav(ev.samples, ev.sampleRate),
@@ -399,7 +402,7 @@
     $('#threshold').value = settings.threshold; $('#thresholdVal').textContent = settings.threshold;
     $('#meterThr').style.right = `${100 - settings.threshold}%`;
     $('#pre').value = settings.pre; $('#tail').value = settings.tail; $('#maxClip').value = settings.maxClip;
-    $('#sampleRate').value = String(settings.sampleRate); $('#keepAwake').checked = settings.keepAwake;
+    $('#sampleRate').value = String(settings.sampleRate); $('#keepAwake').checked = settings.keepAwake; $('#skipSpeech').checked = !!settings.skipSpeech;
   }
 
   let currentFilter = 'all';
@@ -414,8 +417,15 @@
     sel.value = keys.includes(prev) ? prev : 'all';
     currentFilter = sel.value;
   }
+  const selectedIds = new Set();
+  const KIND_LABEL = { bang: 'דפיקה', noise: 'רעש רציף', speech: 'ייתכן דיבור' };
+  function kindTag(kind) { return KIND_LABEL[kind] ? `<span class="tag kind-${kind}" title="סיווג אוטומטי לפי מאפייני הקול, עלול לטעות">${KIND_LABEL[kind]}</span>` : ''; }
+  function renderBulkBar() {
+    const n = selectedIds.size; $('#bulkBar').hidden = !n; $('#bulkCount').textContent = n;
+  }
   function renderEvents() {
     renderNightFilter();
+    renderBulkBar();
     const list = filteredEvents().slice().sort((a, b) => b.noiseTs - a.noiseTs);
     $('#eventCount').textContent = list.length;
     const ul = $('#events');
@@ -427,10 +437,11 @@
       li.dataset.id = e.id;
       li.innerHTML = `
         <div class="ev-head">
-          <div class="ev-time"><span class="ltr">${fmtTime(e.noiseTs)}</span><small class="ltr">${fmtDate(e.noiseTs)}</small></div>
+          <label class="ev-time"><input type="checkbox" class="sel" data-act="sel" ${selectedIds.has(e.id) ? 'checked' : ''} title="סמן לפעולה קבוצתית"><span class="ltr">${fmtTime(e.noiseTs)}</span><small class="ltr">${fmtDate(e.noiseTs)}</small></label>
           <div class="ev-meta">
             <span title="רמת שיא (סולם יחסי)">שיא <b>${disp(e.peakDb).toFixed(0)}</b></span>
             <span title="אורך הקליפ כולל השניות שלפני ואחרי">${fmtDur(e.durationSec)}</span>
+            ${kindTag(e.kind)}
             ${e.truncated ? '<span class="tag">קטוע</span>' : ''}
             ${e.source === 'file' ? `<span class="tag file" title="${escapeHtml(e.sourceName || '')} @ ${fmtHms(e.offsetSec)}">מקובץ</span>` : ''}
           </div>
@@ -467,6 +478,8 @@
     }
   });
   $('#events').addEventListener('change', async (e) => {
+    const sel = e.target.closest('input[data-act="sel"]');
+    if (sel) { const id = Number(sel.closest('li.event').dataset.id); if (sel.checked) selectedIds.add(id); else selectedIds.delete(id); renderBulkBar(); return; }
     const inp = e.target.closest('input[data-act="note"]'); if (!inp) return;
     const id = Number(inp.closest('li.event').dataset.id);
     const ev = events.find((x) => x.id === id); if (!ev) return;
@@ -545,15 +558,31 @@
 
   // ---------- ייבוא הקלטה קיימת ----------
   let imp = null;
+  function makeWorkerClient(w) {
+    let seq = 0; const pending = new Map();
+    w.onmessage = (e) => {
+      const m = e.data; const p = pending.get(m.reqId); if (!p) return;
+      if (m.type === 'progress') { if (p.onProgress) p.onProgress(m.fraction); }
+      else if (m.type === 'clip') { if (p.onClip) p.onClip(m); }
+      else if (m.type === 'error') { pending.delete(m.reqId); p.reject(new Error(m.message)); }
+      else { pending.delete(m.reqId); p.resolve(m); }
+    };
+    w.onerror = (e) => { const err = new Error(e.message || 'שגיאה ברכיב הסריקה'); for (const p of pending.values()) p.reject(err); pending.clear(); };
+    return {
+      call(type, payload, handlers) { const reqId = ++seq; return new Promise((resolve, reject) => { pending.set(reqId, Object.assign({ resolve, reject }, handlers || {})); w.postMessage(Object.assign({ type, reqId }, payload || {})); }); },
+      post(type, payload) { w.postMessage(Object.assign({ type, reqId: 0 }, payload || {})); },
+      terminate() { w.terminate(); pending.clear(); },
+    };
+  }
   function impError(msg) {
     const el = $('#impError'); el.textContent = msg; el.hidden = false;
     $('#impProgress').hidden = true; $('#impScanBtn').disabled = false; $('#impCancelBtn').hidden = true;
     log('שגיאה', 'ייבוא: ' + msg);
   }
   function resetImport() {
-    if (imp && imp.worker) imp.worker.terminate();
+    if (imp && imp.client) imp.client.terminate();
     imp = null;
-    for (const id of ['impInfo', 'impResult', 'impError', 'impProgress', 'impNote']) $('#' + id).hidden = true;
+    for (const id of ['impInfo', 'impResult', 'impReview', 'impError', 'impProgress', 'impNote']) $('#' + id).hidden = true;
     $('#impScanBtn').disabled = false; $('#impCancelBtn').hidden = true; $('#impSaved').textContent = '';
   }
   async function onFileChosen(file) {
@@ -590,20 +619,20 @@
     for (const c of cands) {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'chip';
       b.innerHTML = `<span class="ltr">${fmtDate(c.time)} ${fmtTime(c.time)}</span> · ${escapeHtml(c.source)}`;
-      b.addEventListener('click', () => { imp.startManual = true; $('#impStart').value = toLocalInput(c.time); $('#impStartSrc').textContent = 'מקור: ' + c.source; if (imp && imp.levels) { imp.startMs = c.time; drawTimeline(); } });
+      b.addEventListener('click', () => { imp.startManual = true; $('#impStart').value = toLocalInput(c.time); $('#impStartSrc').textContent = 'מקור: ' + c.source; if (imp && imp.levels) { imp.startMs = c.time; drawTimeline(); if (imp.review) renderReview(); } });
       box.appendChild(b);
     }
   }
   function currentStartMs() { const v = $('#impStart').value; if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.getTime(); }
-  function setImpProgress(f, text) { $('#impBar').style.width = `${Math.round(f * 100)}%`; $('#impProgText').textContent = `${text} ${Math.round(f * 100)}%`; }
+  function setImpProgress(f, text) { $('#impProgress').hidden = false; $('#impBar').style.width = `${Math.round(f * 100)}%`; $('#impProgText').textContent = `${text} ${Math.round(f * 100)}%`; }
 
   async function runImportScan() {
     if (!imp || !imp.file) return;
     const startMs = currentStartMs();
     if (startMs === null) { alert('הזן את זמן תחילת ההקלטה.'); return; }
-    imp.startMs = startMs; imp.levels = null;
-    $('#impError').hidden = true; $('#impResult').hidden = true; $('#impSaved').textContent = '';
-    $('#impScanBtn').disabled = true; $('#impCancelBtn').hidden = false; $('#impProgress').hidden = false; setImpProgress(0, 'מתחיל…');
+    imp.startMs = startMs; imp.levels = null; imp.review = null;
+    $('#impError').hidden = true; $('#impResult').hidden = true; $('#impReview').hidden = true; $('#impSaved').textContent = '';
+    $('#impScanBtn').disabled = true; $('#impCancelBtn').hidden = false; setImpProgress(0, 'מתחיל…');
     log('ייבוא', `סורק את ${imp.file.name} (${fmtBytes(imp.file.size)}), תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)}`);
     try {
       if (imp.fullDecode) {
@@ -621,19 +650,10 @@
         if (!imp.info.durationSec) { imp.info.durationSec = r.durationSec; renderStartCandidates(); imp.startMs = currentStartMs() ?? startMs; }
         onLevels(r);
       } else if (window.Worker) {
-        const w = new Worker('scan-worker.js'); imp.worker = w;
-        await new Promise((resolve, reject) => {
-          w.onerror = (e) => reject(new Error(e.message || 'שגיאה ברכיב הסריקה'));
-          w.onmessage = (e) => {
-            const m = e.data;
-            if (m.type === 'opened') w.postMessage({ type: 'scan' });
-            else if (m.type === 'progress') setImpProgress(m.fraction, 'מפענח…');
-            else if (m.type === 'levels') { onLevels(m); resolve(); }
-            else if (m.type === 'cancelled') reject(new Error('הסריקה בוטלה'));
-            else if (m.type === 'error') reject(new Error(m.message));
-          };
-          w.postMessage({ type: 'open', file: imp.file });
-        });
+        imp.client = makeWorkerClient(new Worker('scan-worker.js'));
+        await imp.client.call('open', { file: imp.file });
+        const r = await imp.client.call('scan', {}, { onProgress: (f) => setImpProgress(f, 'מפענח…') });
+        onLevels(r);
       } else {
         const r = await imp.scanner.scanLevels((f) => setImpProgress(f, 'מפענח…'));
         if (!r) throw new Error('הסריקה בוטלה');
@@ -641,14 +661,14 @@
       }
     } catch (e) {
       impError(e.message);
-      if (imp && imp.worker) { imp.worker.terminate(); imp.worker = null; }
+      if (imp && imp.client) { imp.client.terminate(); imp.client = null; }
       return;
     }
     $('#impProgress').hidden = true; $('#impCancelBtn').hidden = true; $('#impScanBtn').disabled = false;
   }
   function cancelImportScan() {
     if (!imp) return;
-    if (imp.worker) imp.worker.postMessage({ type: 'cancel' });
+    if (imp.client) imp.client.post('cancel');
     if (imp.scanner && imp.scanner.cancel) imp.scanner.cancel();
   }
   function onLevels(r) {
@@ -666,9 +686,10 @@
     const thr = Number($('#impThr').value); $('#impThrVal').textContent = thr;
     imp.threshold = thr - 100;
     imp.detected = NoiseScan.detectFromLevels(imp.levels, { threshold: imp.threshold, pre: settings.pre, tail: settings.tail, maxClip: settings.maxClip });
+    imp.review = null; $('#impReview').hidden = true; $('#impSaved').textContent = '';
     const n = imp.detected.length; const totalSec = imp.detected.reduce((a, e) => a + (e.endSec - e.startSec), 0);
     $('#impCount').textContent = n ? `${n} אירועים, סה"כ ${fmtDur(totalSec)} של קליפים (כ-${fmtBytes(totalSec * imp.sampleRate * 2)})` : 'לא נמצאו אירועים מעל הסף. הנמך את הסף.';
-    $('#impSaveCount').textContent = n; $('#impSaveBtn').disabled = !n;
+    $('#impReviewBtn').disabled = !n; $('#impReviewCount').textContent = n;
     drawTimeline();
   }
   function drawTimeline() {
@@ -696,41 +717,98 @@
       g.fillText(label, Math.min(W - 18, Math.max(18, (W * k) / 4)), H - 3);
     }
   }
-  async function saveImport() {
+  // חילוץ קליפ אחד (להאזנה או לשמירה)
+  async function extractOne(t0, t1) {
+    if (imp.client) { let clip = null; await imp.client.call('extract', { ranges: [{ id: 0, t0, t1 }] }, { onClip: (m) => { clip = m; } }); return clip; }
+    const samples = await imp.scanner.extract(t0, t1);
+    return { samples, sampleRate: imp.scanner.outRate || imp.sampleRate };
+  }
+  // שלב הסקירה: מסווגים כל אירוע (דפיקה / רעש רציף / ייתכן דיבור) ומציגים רשימה עם האזנה ובחירה
+  async function analyzeImport() {
     if (!imp || !imp.detected || !imp.detected.length) return;
+    const list = imp.detected;
+    $('#impReviewBtn').disabled = true; setImpProgress(0, 'מנתח אירועים…');
+    let results;
+    try {
+      if (imp.client) {
+        results = (await imp.client.call('analyze', { ranges: list.map((e, i) => ({ id: i, t0: e.startSec, t1: e.endSec })) }, { onProgress: (f) => setImpProgress(f, 'מנתח אירועים…') })).results;
+      } else {
+        results = [];
+        for (let i = 0; i < list.length; i++) { const c = await extractOne(list[i].startSec, list[i].endSec); results.push(NoiseScan.classify(c.samples, c.sampleRate)); setImpProgress((i + 1) / list.length, 'מנתח אירועים…'); await new Promise((r) => setTimeout(r, 0)); }
+      }
+    } catch (e) { impError('הניתוח נכשל: ' + e.message); $('#impReviewBtn').disabled = false; return; }
+    imp.review = list.map((e, i) => Object.assign({}, e, { cls: results[i], kind: results[i].kind, selected: true }));
+    $('#impProgress').hidden = true; $('#impReviewBtn').disabled = false;
+    renderReview();
+    $('#impReview').hidden = false;
+    $('#impReview').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function renderReview() {
+    const ul = $('#impReviewList'); ul.innerHTML = '';
+    const startMs = currentStartMs() ?? imp.startMs;
+    imp.review.forEach((r, i) => {
+      const li = document.createElement('li'); li.className = 'rev' + (r.selected ? '' : ' off'); li.dataset.i = i;
+      const ts = startMs + r.noiseSec * 1000;
+      li.innerHTML = `
+        <label class="rev-main">
+          <input type="checkbox" data-act="sel" ${r.selected ? 'checked' : ''}>
+          <span class="ev-time"><span class="ltr">${fmtTime(ts)}</span><small class="ltr">${fmtDate(ts)}</small></span>
+          <span class="ev-meta">שיא <b>${disp(r.peakDb).toFixed(0)}</b> · ${fmtDur(r.endSec - r.startSec)} ${kindTag(r.kind)}${r.truncated ? '<span class="tag">קטוע</span>' : ''}</span>
+        </label>
+        <button class="btn small" data-act="play" title="האזן">▶</button>
+        <div class="player" hidden></div>`;
+      ul.appendChild(li);
+    });
+    updateReviewSummary();
+  }
+  function updateReviewSummary() {
+    const sel = imp.review.filter((r) => r.selected).length;
+    const speech = imp.review.filter((r) => r.kind === 'speech').length;
+    $('#impSelCount').textContent = sel; $('#impSaveBtn').disabled = !sel;
+    $('#impReviewSummary').textContent = `${imp.review.length} אירועים, ${sel} מסומנים לשמירה${speech ? `. ${speech} נשמעים כדיבור (מסומנים בתג), כדאי להאזין להם` : ''}.`;
+  }
+  async function playReview(li, i) {
+    const p = li.querySelector('.player');
+    if (!p.hidden) { p.hidden = true; p.innerHTML = ''; return; }
+    const r = imp.review[i]; const btn = li.querySelector('button[data-act="play"]'); btn.disabled = true;
+    try {
+      const c = await extractOne(r.startSec, r.endSec);
+      const a = document.createElement('audio'); a.controls = true; a.src = URL.createObjectURL(encodeWav(c.samples, c.sampleRate));
+      p.innerHTML = ''; p.appendChild(a); p.hidden = false; a.play().catch(() => {});
+    } catch (e) { p.innerHTML = `<span class="error">לא ניתן לנגן: ${escapeHtml(e.message)}</span>`; p.hidden = false; }
+    finally { btn.disabled = false; }
+  }
+  async function saveImport() {
+    if (!imp || !imp.review) return;
+    const list = imp.review.filter((r) => r.selected);
+    if (!list.length) return;
     const dup = events.filter((e) => e.sourceName === imp.file.name).length;
     if (dup && !confirm(`כבר יש ${dup} אירועים מהקובץ "${imp.file.name}". לייבא שוב (ייווצרו כפילויות)?`)) return;
     const startMs = currentStartMs() ?? imp.startMs; imp.startMs = startMs;
-    const list = imp.detected, importId = Date.now(); let saved = 0;
-    $('#impSaveBtn').disabled = true; $('#impProgress').hidden = false; setImpProgress(0, 'שומר קליפים…');
+    const importId = Date.now(); let saved = 0;
+    $('#impSaveBtn').disabled = true; setImpProgress(0, 'שומר קליפים…');
     const saveOne = async (e, samples, sampleRate) => {
       const rec = {
         startTs: Math.round(startMs + e.startSec * 1000), noiseTs: Math.round(startMs + e.noiseSec * 1000), endTs: Math.round(startMs + e.endSec * 1000),
-        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '',
+        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind,
         sessionId: importId, source: 'file', sourceName: imp.file.name, offsetSec: e.noiseSec, blob: encodeWav(samples, sampleRate),
       };
       rec.id = await dbAdd('events', rec); events.push(rec); saved++;
       setImpProgress(saved / list.length, `שומר קליפים… ${saved}/${list.length}`);
     };
     try {
-      if (imp.worker) {
-        await new Promise((resolve, reject) => {
-          const w = imp.worker; let chain = Promise.resolve();
-          w.onmessage = (ev) => {
-            const m = ev.data;
-            if (m.type === 'clip') chain = chain.then(() => saveOne(list[m.id], m.samples, m.sampleRate)).catch(reject);
-            else if (m.type === 'extracted') chain.then(resolve, reject);
-            else if (m.type === 'error') reject(new Error(m.message));
-          };
-          w.postMessage({ type: 'extract', ranges: list.map((e, i) => ({ id: i, t0: e.startSec, t1: e.endSec })) });
-        });
+      if (imp.client) {
+        let chain = Promise.resolve();
+        await imp.client.call('extract', { ranges: list.map((e, i) => ({ id: i, t0: e.startSec, t1: e.endSec })) }, { onClip: (m) => { chain = chain.then(() => saveOne(list[m.id], m.samples, m.sampleRate)); } });
+        await chain;
       } else {
-        for (const e of list) { const samples = await imp.scanner.extract(e.startSec, e.endSec); await saveOne(e, samples, imp.scanner.outRate || imp.sampleRate); }
+        for (const e of list) { const c = await extractOne(e.startSec, e.endSec); await saveOne(e, c.samples, c.sampleRate); }
       }
     } catch (e) {
       impError('השמירה נכשלה אחרי ' + saved + ' אירועים: ' + e.message); renderEvents(); refreshStorage(); return;
     }
-    log('ייבוא', `נשמרו ${saved} אירועים מהקובץ ${imp.file.name}. תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)} (${$('#impStartSrc').textContent.replace('מקור: ', '')}), סף ${imp.threshold + 100}`);
+    const skipped = imp.review.length - list.length;
+    log('ייבוא', `נשמרו ${saved} אירועים מהקובץ ${imp.file.name}${skipped ? ` (${skipped} הוסרו בסקירה)` : ''}. תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)} (${$('#impStartSrc').textContent.replace('מקור: ', '')}), סף ${imp.threshold + 100}`);
     $('#impProgress').hidden = true; $('#impSaveBtn').disabled = false;
     $('#impSaved').textContent = `נשמרו ${saved} אירועים. הם מופיעים ברשימת האירועים למטה, מסומנים "מקובץ".`;
     renderEvents(); refreshStorage();
@@ -740,8 +818,20 @@
     $('#impScanBtn').addEventListener('click', runImportScan);
     $('#impCancelBtn').addEventListener('click', cancelImportScan);
     $('#impThr').addEventListener('input', recountImport);
+    $('#impReviewBtn').addEventListener('click', analyzeImport);
     $('#impSaveBtn').addEventListener('click', saveImport);
-    $('#impStart').addEventListener('change', () => { if (imp) imp.startManual = true; $('#impStartSrc').textContent = 'מקור: הוזן ידנית'; if (imp && imp.levels) { imp.startMs = currentStartMs(); drawTimeline(); } });
+    $('#impStart').addEventListener('change', () => { if (imp) imp.startManual = true; $('#impStartSrc').textContent = 'מקור: הוזן ידנית'; if (imp && imp.levels) { imp.startMs = currentStartMs(); drawTimeline(); if (imp.review) renderReview(); } });
+    $('#impReviewList').addEventListener('change', (e) => {
+      const cb = e.target.closest('input[data-act="sel"]'); if (!cb || !imp || !imp.review) return;
+      const li = cb.closest('li.rev'); const r = imp.review[Number(li.dataset.i)]; r.selected = cb.checked; li.classList.toggle('off', !cb.checked); updateReviewSummary();
+    });
+    $('#impReviewList').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-act="play"]'); if (!btn || !imp || !imp.review) return;
+      const li = btn.closest('li.rev'); playReview(li, Number(li.dataset.i));
+    });
+    $('#impSelAll').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { r.selected = true; }); renderReview(); });
+    $('#impSelNone').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { r.selected = false; }); renderReview(); });
+    $('#impSelNoSpeech').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { if (r.kind === 'speech') r.selected = false; }); renderReview(); });
     window.addEventListener('resize', () => { if (imp && imp.levels) drawTimeline(); });
   }
 
@@ -759,8 +849,19 @@
       $('#' + k).addEventListener('change', () => { const v = Number($('#' + k).value); if (Number.isFinite(v) && v >= 0) { settings[k] = v; saveSettings(); if (imp && imp.levels) recountImport(); } });
     }
     $('#sampleRate').addEventListener('change', () => { settings.sampleRate = Number($('#sampleRate').value); saveSettings(); if (monitoring) log('מידע', 'קצב הדגימה ישתנה בניטור הבא'); });
+    $('#skipSpeech').addEventListener('change', () => { settings.skipSpeech = $('#skipSpeech').checked; saveSettings(); });
     $('#keepAwake').addEventListener('change', () => { settings.keepAwake = $('#keepAwake').checked; saveSettings(); if (settings.keepAwake && monitoring) acquireWakeLock(); else if (wakeLock) { wakeLock.release(); } });
     $('#nightFilter').addEventListener('change', () => { currentFilter = $('#nightFilter').value; renderEvents(); });
+    $('#bulkDelete').addEventListener('click', async () => {
+      const ids = Array.from(selectedIds); if (!ids.length) return;
+      if (!confirm(`למחוק ${ids.length} אירועים מסומנים? הפעולה אינה הפיכה.`)) return;
+      for (const id of ids) { await dbDelete('events', id); }
+      events = events.filter((x) => !selectedIds.has(x.id)); selectedIds.clear();
+      log('מידע', `${ids.length} אירועים הוסרו בסקירה ידנית (לא רלוונטיים)`);
+      renderEvents(); refreshStorage();
+    });
+    $('#bulkSpeech').addEventListener('click', () => { for (const e of filteredEvents()) if (e.kind === 'speech') selectedIds.add(e.id); renderEvents(); });
+    $('#bulkClear').addEventListener('click', () => { selectedIds.clear(); renderEvents(); });
     $('#csvBtn').addEventListener('click', exportCsv);
     $('#zipBtn').addEventListener('click', exportZip);
     $('#clearBtn').addEventListener('click', async () => {

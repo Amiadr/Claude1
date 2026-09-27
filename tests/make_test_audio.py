@@ -22,6 +22,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--rate", type=int, default=48000)
+    ap.add_argument("--with-speech", action="store_true", help="הוספת קטע דמוי דיבור (הרמוניות עם גובה צליל משתנה והברות) בשנייה 32")
     args = ap.parse_args()
     sr = args.rate
     rng = np.random.default_rng(1234)
@@ -35,6 +36,14 @@ def main():
         else:
             burst = rng.normal(0, 0.056, i1 - i0)  # ~ -25 dBFS RMS
         sig[i0:i1] += burst
+    if args.with_speech:
+        i0 = int(32.0 * sr)
+        t = np.arange(int(2.5 * sr)) / sr
+        f0 = 100 + 80 * (0.5 + 0.5 * np.sin(2 * np.pi * 0.7 * t))
+        phase = 2 * np.pi * np.cumsum(f0) / sr
+        voice = sum(np.sin(h * phase) / h for h in range(1, 13))
+        syl = (0.5 + 0.5 * np.sin(2 * np.pi * 4 * t)) ** 2
+        sig[i0:i0 + len(t)] += 0.15 * voice * syl
     pcm = np.clip(sig, -1, 1)
     pcm = (pcm * 32767).astype(np.int16)
     with wave.open(args.out, "wb") as w:
@@ -42,7 +51,7 @@ def main():
         w.setsampwidth(2)
         w.setframerate(sr)
         w.writeframes(pcm.tobytes())
-    print(f"wrote {args.out}: {DURATION}s @ {sr} Hz, events at {[e[1] for e in EVENTS]}")
+    print(f"wrote {args.out}: {DURATION}s @ {sr} Hz, events at {[e[1] for e in EVENTS]}{' + speech-like at 32.0' if args.with_speech else ''}")
 
 
 if __name__ == "__main__":

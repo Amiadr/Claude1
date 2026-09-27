@@ -36,6 +36,8 @@ function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.e
   await page.fill('#pre', '2'); await page.dispatchEvent('#pre', 'change');
   await page.fill('#tail', '2'); await page.dispatchEvent('#tail', 'change');
   await page.evaluate(() => { const t = document.querySelector('#threshold'); t.value = 55; t.dispatchEvent(new Event('input')); });
+  const speechMode = /speech/.test(path.basename(wavPath));
+  if (speechMode) { await page.check('#skipSpeech'); }
   const settings = await page.evaluate(() => JSON.stringify(window.__noiseLog.settings));
   console.log('settings', settings);
 
@@ -48,7 +50,8 @@ function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.e
   // הקובץ אורכו 40 שניות; מחכים ל-3 אירועים (עד 60 שניות)
   await page.waitForFunction(() => window.__noiseLog.events.length >= 3, null, { timeout: 60000 }).catch(() => {});
   await page.waitForTimeout(3000);
-  const events = await page.evaluate(() => window.__noiseLog.events.map((e) => ({ id: e.id, noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, peak: window.__noiseLog.disp(e.peakDb), avg: window.__noiseLog.disp(e.avgDb), truncated: e.truncated, sampleRate: e.sampleRate, size: e.blob.size })));
+  if (speechMode) await page.waitForTimeout(Math.max(0, 42000 - (Date.now() - t0))); // הקטע דמוי הדיבור מתחיל בשנייה 32
+  const events = await page.evaluate(() => window.__noiseLog.events.map((e) => ({ id: e.id, noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, peak: window.__noiseLog.disp(e.peakDb), avg: window.__noiseLog.disp(e.avgDb), truncated: e.truncated, sampleRate: e.sampleRate, size: e.blob.size, kind: e.kind })));
   console.log(JSON.stringify(events, null, 1));
   assert(events.length === 3, `3 events detected (got ${events.length})`);
   if (events.length === 3) {
@@ -63,13 +66,22 @@ function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.e
     assert(b.peak > 65 && b.peak < 85, `drag level in expected range (${b.peak.toFixed(0)})`);
     assert(Math.abs((a.noiseTs - a.startTs) / 1000 - 2.0) < 0.3, `pre-roll ≈ 2s (got ${((a.noiseTs - a.startTs) / 1000).toFixed(2)})`);
     assert(events.every((e) => e.sampleRate === 16000), 'sample rate 16000');
+    assert(events.map((e) => e.kind).join('/') === 'bang/noise/bang', `live classification bang/noise/bang (got ${events.map((e) => e.kind).join('/')})`);
     assert(events.every((e) => Math.abs(e.size - (44 + e.durationSec * e.sampleRate * 2)) < 4), 'WAV size matches duration');
   }
   // הקליפים בממשק
   const cards = await page.$$eval('#events li.event', (els) => els.length);
   assert(cards === events.length, `UI shows ${cards} event cards`);
+  if (speechMode) {
+    const skipped = await page.$eval('#nightSkipped', (el) => el.textContent);
+    assert(/1/.test(skipped), `speech filter: one speech-like event skipped and not saved (${skipped})`);
+  }
   await page.click('#stopBtn');
   await page.waitForFunction(() => !window.__noiseLog.monitoring);
+  if (speechMode) {
+    const logText0 = await page.$eval('#log', (el) => el.innerText);
+    assert(/1 אירועים שנשמעו כדיבור לא נשמרו/.test(logText0), 'speech filter: session log reports the count only');
+  }
   await page.screenshot({ path: path.join(outDir, 'shot-events.png'), fullPage: true });
 
   // CSV

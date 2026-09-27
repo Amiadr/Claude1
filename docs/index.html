@@ -15,6 +15,7 @@
     --accent: #38bdf8; --ok: #22c55e; --warn: #f59e0b; --err: #ef4444; --border: #334155;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 16px; line-height: 1.45; }
   body { padding: 0 16px calc(24px + env(safe-area-inset-bottom)); max-width: 720px; margin: 0 auto; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 6px; }
@@ -82,6 +83,19 @@
   details.help li { margin: 4px 0; }
 
   .tag.file { background: #1e3a5f; color: #bae6fd; }
+  .tag.kind-bang { background: #3f3f46; color: #e4e4e7; }
+  .tag.kind-noise { background: #3f3f46; color: #e4e4e7; }
+  .tag.kind-speech { background: #78350f; color: #fde68a; }
+  .ev-time input.sel { width: 20px; height: 20px; margin: 0 0 0 6px; accent-color: var(--accent); vertical-align: middle; }
+  .bulk { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: #0b1220; border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
+  .revlist { list-style: none; margin: 0; padding: 0; }
+  .rev { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; border-top: 1px solid var(--border); padding: 10px 0; }
+  .rev:first-child { border-top: 0; }
+  .rev.off { opacity: .45; }
+  .rev-main { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; cursor: pointer; }
+  .rev-main input { width: 22px; height: 22px; accent-color: var(--accent); }
+  .rev .ev-time { font-size: 1.1rem; }
+  .rev .player { grid-column: 1 / -1; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .chip { appearance: none; border: 1px solid var(--border); background: #0b1220; color: var(--muted); padding: 6px 10px; border-radius: 999px; font-size: .82rem; cursor: pointer; text-align: start; }
   .chip:hover { color: var(--text); border-color: var(--accent); }
@@ -125,7 +139,7 @@
     <button id="stopBtn" class="btn stop big" hidden>■ עצור</button>
     <button id="nightBtn" class="btn" disabled title="מסך שחור עם שעון; הניטור ממשיך">🌙 מסך לילה</button>
   </div>
-  <div class="muted" style="margin-top:8px">אירועים במפגש הנוכחי: <b id="nightCount">0</b></div>
+  <div class="muted" style="margin-top:8px">אירועים במפגש הנוכחי: <b id="nightCount">0</b> <span id="nightSkipped"></span></div>
 </section>
 
 <section class="card">
@@ -140,6 +154,7 @@
   <div class="field"><label for="maxClip">אורך קליפ מרבי (שניות)<small>רעש ארוך יותר יפוצל לכמה קליפים</small></label><input id="maxClip" type="number" min="10" max="600" step="10"></div>
   <div class="field"><label for="sampleRate">איכות הקלטה<small>16 kHz מספיק לדפיקות וגרירות וחוסך מקום</small></label>
     <select id="sampleRate"><option value="16000">16 kHz (חסכוני)</option><option value="32000">32 kHz</option><option value="48000">48 kHz (מלא)</option></select></div>
+  <div class="field"><label for="skipSpeech">סינון דיבור (ניסיוני)<small>אירועים שנשמעים כדיבור לא יישמרו כלל. הזיהוי לפי מאפייני קול ועלול לטעות לשני הכיוונים. בלי זה, אירועים כאלה נשמרים עם התג "ייתכן דיבור" ואפשר למחוק אותם בבוקר.</small></label><input id="skipSpeech" type="checkbox"></div>
   <div class="field"><label for="keepAwake">השאר מסך דלוק בזמן ניטור<small>מומלץ. בטלפון: חבר למטען והשתמש ב"מסך לילה"</small></label><input id="keepAwake" type="checkbox"></div>
 </section>
 
@@ -166,7 +181,18 @@
       <input id="impThr" type="range" min="1" max="99" step="1">
     </div>
     <div id="impCount" class="muted"></div>
-    <div class="row top"><button id="impSaveBtn" class="btn primary">💾 שמור <span id="impSaveCount">0</span> אירועים</button></div>
+    <div class="row top"><button id="impReviewBtn" class="btn primary">🎧 האזנה ובחירה (<span id="impReviewCount">0</span>)</button></div>
+  </div>
+  <div id="impReview" hidden>
+    <h2 style="margin-top:14px">סקירה לפני שמירה</h2>
+    <div id="impReviewSummary" class="muted"></div>
+    <div class="row" style="margin:8px 0">
+      <button id="impSelAll" class="btn small">בחר הכל</button>
+      <button id="impSelNone" class="btn small">נקה הכל</button>
+      <button id="impSelNoSpeech" class="btn small">בטל סימון של "ייתכן דיבור"</button>
+    </div>
+    <ul id="impReviewList" class="revlist"></ul>
+    <div class="row top"><button id="impSaveBtn" class="btn primary">💾 שמור <span id="impSelCount">0</span> אירועים מסומנים</button></div>
     <div id="impSaved" class="muted" style="margin-top:8px"></div>
   </div>
 </section>
@@ -176,6 +202,12 @@
     <h2 style="margin:0">אירועים (<span id="eventCount">0</span>)</h2>
     <select id="nightFilter" class="btn small"><option value="all">כל הלילות</option></select>
   </div>
+  <div id="bulkBar" class="bulk" hidden>
+    <span>נבחרו <b id="bulkCount">0</b></span>
+    <button id="bulkDelete" class="btn small danger">🗑 מחק מסומנים</button>
+    <button id="bulkClear" class="btn small">נקה בחירה</button>
+  </div>
+  <div class="row" style="margin-bottom:6px"><button id="bulkSpeech" class="btn small" title="מסמן את כל האירועים שסווגו אוטומטית כדיבור, לבדיקה ומחיקה">סמן את כל "ייתכן דיבור"</button></div>
   <ul id="events"></ul>
   <div class="row top">
     <button id="csvBtn" class="btn small">ייצוא CSV</button>
