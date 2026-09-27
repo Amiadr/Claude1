@@ -78,6 +78,20 @@ function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.e
   }
   await page.click('#stopBtn');
   await page.waitForFunction(() => !window.__noiseLog.monitoring);
+  // ---- Detector: זיהוי לפי תדרים נמוכים מתעלם מנשימה (איוושה בתדרים גבוהים) אבל תופס דפיקה ----
+  const lfTest = await page.evaluate(() => {
+    const sr = 16000, N = 12 * sr; const x = new Float32Array(N);
+    let st = 7; const rnd = () => { st = (st * 1664525 + 1013904223) >>> 0; return st / 4294967296 - 0.5; }; const gauss = () => { let a = 0; for (let k = 0; k < 12; k++) a += rnd(); return a; };
+    for (let i = 0; i < N; i++) x[i] = 0.0005 * gauss();
+    const breath = new Float32Array(2 * sr); for (let i = 0; i < breath.length; i++) breath[i] = 0.05 * gauss();
+    const hp = new NoiseScan.Biquad('highpass', 800, sr); hp.run(breath, breath); new NoiseScan.Biquad('highpass', 800, sr).run(breath, breath);
+    for (let i = 0; i < breath.length; i++) x[3 * sr + i] += breath[i];
+    for (let i = 0; i < 0.5 * sr; i++) { const u = i / sr; x[8 * sr + i] += 0.35 * Math.sin(2 * Math.PI * 90 * u) * Math.exp(-6 * u); }
+    const run = (band) => { const evs = []; const d = new window.__noiseLog.Detector(sr, { threshold: 55, pre: 1, tail: 1, maxClip: 120, detectBand: band }, (e) => evs.push(e.noiseTs)); for (let i = 0; i + 1024 <= N; i += 1024) d.push(x.subarray(i, i + 1024), (i / sr) * 1000); d.flush(); return evs; };
+    return { full: run('full'), low: run('low') };
+  });
+  assert(lfTest.full.length === 2 && Math.abs(lfTest.full[0] - 3000) < 150 && Math.abs(lfTest.full[1] - 8000) < 150, `detector full band: breath + thump (${lfTest.full.join(',')})`);
+  assert(lfTest.low.length === 1 && Math.abs(lfTest.low[0] - 8000) < 150, `detector low band: thump only (${lfTest.low.join(',')})`);
   if (speechMode) {
     const logText0 = await page.$eval('#log', (el) => el.innerText);
     assert(/1 אירועים שנשמעו כדיבור לא נשמרו/.test(logText0), 'speech filter: session log reports the count only');

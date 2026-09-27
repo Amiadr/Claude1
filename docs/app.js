@@ -6,7 +6,7 @@
   const $$ = (s) => Array.from(document.querySelectorAll(s));
 
   // ---------- הגדרות ----------
-  const DEFAULTS = { threshold: 55, pre: 3, tail: 3, maxClip: 120, sampleRate: 16000, keepAwake: true, skipSpeech: false, deviceName: '', deviceId: '', driveFolder: 'יומן רעש', googleClientId: '' };
+  const DEFAULTS = { threshold: 55, pre: 3, tail: 3, maxClip: 120, sampleRate: 16000, keepAwake: true, skipSpeech: false, skipBreath: false, detectBand: 'full', deviceName: '', deviceId: '', driveFolder: 'יומן רעש', googleClientId: '' };
   const SETTINGS_KEY = 'noise-log-settings-v1';
   const settings = loadSettings();
 
@@ -98,12 +98,23 @@
       this.recent = []; this.recentSamples = 0; // pre-roll buffer
       this.active = null;
       this.lastDb = -100;
+      // מסנן תדרים נמוכים (רעשי קיר ורצפה) – בשימוש כשההגדרה detectBand היא 'low'
+      this.lpf = window.NoiseScan ? [new NoiseScan.Biquad('lowpass', NoiseScan.LOW_BAND_HZ, sampleRate), new NoiseScan.Biquad('lowpass', NoiseScan.LOW_BAND_HZ, sampleRate)] : null;
+      this.tmp = null;
     }
     push(samples, wall) {
       let sumSq = 0;
       for (let i = 0; i < samples.length; i++) { const v = samples[i]; sumSq += v * v; }
       const rms = Math.sqrt(sumSq / samples.length);
-      const db = 20 * Math.log10(Math.max(rms, 1e-6));
+      let db = 20 * Math.log10(Math.max(rms, 1e-6));
+      this.lastDbFull = db;
+      if (this.lpf) {
+        if (!this.tmp || this.tmp.length < samples.length) this.tmp = new Float32Array(samples.length);
+        const lf = this.lpf[1].run(this.lpf[0].run(samples, this.tmp), this.tmp);
+        let sl = 0; for (let i = 0; i < samples.length; i++) sl += lf[i] * lf[i];
+        this.lastDbLow = 20 * Math.log10(Math.max(Math.sqrt(sl / samples.length), 1e-6));
+        if (this.s.detectBand === 'low') db = this.lastDbLow;
+      }
       this.lastDb = db;
       const loud = disp(db) >= this.s.threshold;
       const chunkMs = samples.length / this.sr * 1000;
@@ -302,7 +313,7 @@
     try { ctx && ctx.close(); } catch (e) { /* ignore */ }
     ctx = null; stream = null; procNode = null; srcNode = null; detector = null;
     if (wakeLock) { try { wakeLock.release(); } catch (e) { /* ignore */ } wakeLock = null; }
-    log('סיום', `ניטור הופסק${fromError ? ' (בגלל תקלה)' : ''}. אירועים במפגש זה: ${sessionEvents}${skippedSpeech ? `. ${skippedSpeech} אירועים שנשמעו כדיבור לא נשמרו (סינון דיבור)` : ''}`);
+    log('סיום', `ניטור הופסק${fromError ? ' (בגלל תקלה)' : ''}. אירועים במפגש זה: ${sessionEvents}${skippedSpeech ? `. ${skippedSpeech} אירועים סוננו (דיבור/נשימות) ולא נשמרו` : ''}`);
     if (sessionId) { const dev = deviceInfo(); dbPut('scans', { id: uuid(), type: 'live', startTs: sessionId, endTs: Date.now(), scannedAt: Date.now(), deviceId: dev.deviceId, deviceName: dev.deviceName, eventsSaved: sessionEvents, threshold: settings.threshold }).catch(() => {}); }
     if (!fromError) setStatus('לא מנטר', 'off');
     updateButtons();
@@ -354,7 +365,7 @@
   async function saveEvent(ev) {
     let kind = 'unknown';
     try { if (window.NoiseScan) kind = NoiseScan.classify(ev.samples, ev.sampleRate).kind; } catch (e) { /* ignore */ }
-    if (kind === 'speech' && settings.skipSpeech) { skippedSpeech++; $('#nightSkipped').textContent = `לא נשמרו (דיבור אפשרי): ${skippedSpeech}`; return; }
+    if ((kind === 'speech' && settings.skipSpeech) || (kind === 'breath' && settings.skipBreath)) { skippedSpeech++; $('#nightSkipped').textContent = `לא נשמרו (סינון ${kind === 'speech' ? 'דיבור' : 'נשימות'}): ${skippedSpeech}`; return; }
     const dev = deviceInfo();
     const rec = { kind, uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       startTs: ev.startTs, noiseTs: ev.noiseTs, endTs: ev.endTs, durationSec: ev.durationSec,
@@ -378,11 +389,11 @@
   async function autoCalibrate() {
     if (!monitoring) { alert('קודם התחל ניטור, ואז לחץ כיול.'); return; }
     const btn = $('#calibrateBtn'); btn.disabled = true;
-    const samplesDb = [];
+    const samplesDb = [], fullDb = [];
     const start = Date.now();
     await new Promise((resolve) => {
       const iv = setInterval(() => {
-        if (detector) samplesDb.push(disp(detector.lastDb));
+        if (detector) { samplesDb.push(disp(detector.lastDb)); fullDb.push(disp(detector.lastDbFull !== undefined ? detector.lastDbFull : detector.lastDb)); }
         const left = 5 - Math.floor((Date.now() - start) / 1000);
         btn.textContent = `מודד שקט… ${Math.max(0, left)}`;
         if (Date.now() - start >= 5000) { clearInterval(iv); resolve(); }
@@ -390,9 +401,10 @@
     });
     btn.disabled = false; btn.textContent = 'כיול אוטומטי (5 שנ׳ שקט)';
     if (!samplesDb.length) return;
-    samplesDb.sort((a, b) => a - b);
+    samplesDb.sort((a, b) => a - b); fullDb.sort((a, b) => a - b);
     const floor = samplesDb[Math.floor(samplesDb.length * 0.9)]; // כמעט הרמה הגבוהה ביותר בשקט
-    settings.threshold = Math.min(99, Math.round(floor + 12));
+    const floorFull = fullDb[Math.floor(fullDb.length * 0.9)];
+    settings.threshold = Math.min(99, Math.round(settings.detectBand === 'low' ? Math.max(floor + 12, floorFull + 8) : floor + 12));
     saveSettings(); syncSettingsUi();
     log('מידע', `כיול: רמת רקע ${floor.toFixed(0)}, סף חדש ${settings.threshold}`);
   }
@@ -422,12 +434,19 @@
     $('#threshold').value = settings.threshold; $('#thresholdVal').textContent = settings.threshold;
     $('#meterThr').style.right = `${100 - settings.threshold}%`;
     $('#pre').value = settings.pre; $('#tail').value = settings.tail; $('#maxClip').value = settings.maxClip;
-    $('#sampleRate').value = String(settings.sampleRate); $('#keepAwake').checked = settings.keepAwake; $('#skipSpeech').checked = !!settings.skipSpeech;
+    $('#sampleRate').value = String(settings.sampleRate); $('#keepAwake').checked = settings.keepAwake; $('#skipSpeech').checked = !!settings.skipSpeech; $('#skipBreath').checked = !!settings.skipBreath; $('#lowBand').checked = settings.detectBand === 'low';
   }
 
   let currentFilter = 'all';
+  let kindFilter = null; let eventSort = 'time';
   function filteredEvents() {
-    return events.filter((e) => currentFilter === 'all' || nightKey(e.noiseTs) === currentFilter);
+    return events.filter((e) => (currentFilter === 'all' || nightKey(e.noiseTs) === currentFilter) && kindFilter.has(e.kind || 'unknown'));
+  }
+  function renderKindFilter() {
+    const box = $('#kindFilter'); if (!box) return;
+    const inNight = events.filter((e) => currentFilter === 'all' || nightKey(e.noiseTs) === currentFilter);
+    const counts = {}; for (const e of inNight) { const k = e.kind || 'unknown'; counts[k] = (counts[k] || 0) + 1; }
+    box.innerHTML = KIND_ORDER.filter((k) => counts[k]).map((k) => `<button type="button" class="chip kind-chip ${kindFilter.has(k) ? 'on' : ''}" data-kind="${k}">${KIND_LABEL[k]} <b>${counts[k]}</b></button>`).join('');
   }
   function renderNightFilter() {
     const sel = $('#nightFilter');
@@ -438,15 +457,19 @@
     currentFilter = sel.value;
   }
   const selectedIds = new Set();
-  const KIND_LABEL = { bang: 'דפיקה', noise: 'רעש רציף', speech: 'ייתכן דיבור' };
-  function kindTag(kind) { return KIND_LABEL[kind] ? `<span class="tag kind-${kind}" title="סיווג אוטומטי לפי מאפייני הקול, עלול לטעות">${KIND_LABEL[kind]}</span>` : ''; }
+  const KIND_LABEL = { bang: 'דפיקה', bangdrag: 'דפיקה + גרירה', noise: 'רעש רציף', breath: 'נשימה', speech: 'ייתכן דיבור', unknown: 'לא ידוע' };
+  const KIND_ORDER = ['bang', 'bangdrag', 'noise', 'breath', 'speech', 'unknown'];
+  kindFilter = new Set(KIND_ORDER);
+  function segText(cls) { return cls && cls.segments && cls.segments.length ? 'רצף: ' + cls.segments.map((g) => `${{ bang: 'דפיקה', drag: 'רעש רציף', breath: 'נשימה' }[g.kind] || g.kind} ${g.dur}s`).join(', ') : ''; }
+  function kindTag(kind, extra) { return KIND_LABEL[kind] ? `<span class="tag kind-${kind}" title="סיווג אוטומטי לפי מאפייני הקול, עלול לטעות${extra ? '. ' + escapeHtml(extra) : ''}">${KIND_LABEL[kind]}${kind === 'breath' && extra && /מחזורי/.test(extra) ? '?' : ''}</span>` : ''; }
   function renderBulkBar() {
     const n = selectedIds.size; $('#bulkBar').hidden = !n; $('#bulkCount').textContent = n;
   }
   function renderEvents() {
     renderNightFilter();
+    renderKindFilter();
     renderBulkBar();
-    const list = filteredEvents().slice().sort((a, b) => b.noiseTs - a.noiseTs);
+    const list = filteredEvents().slice().sort((a, b) => (eventSort === 'level' ? b.peakDb - a.peakDb || b.noiseTs - a.noiseTs : b.noiseTs - a.noiseTs));
     $('#eventCount').textContent = list.length;
     const ul = $('#events');
     ul.innerHTML = '';
@@ -461,7 +484,7 @@
           <div class="ev-meta">
             <span title="רמת שיא (סולם יחסי)">שיא <b>${disp(e.peakDb).toFixed(0)}</b></span>
             <span title="אורך הקליפ כולל השניות שלפני ואחרי">${fmtDur(e.durationSec)}</span>
-            ${kindTag(e.kind)}
+            ${kindTag(e.kind, e.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '')}
             ${e.truncated ? '<span class="tag">קטוע</span>' : ''}
             ${e.source === 'file' ? `<span class="tag file" title="${escapeHtml(e.sourceName || '')} @ ${fmtHms(e.offsetSec)}">מקובץ</span>` : ''}
             ${cloudTag(e)}
@@ -743,15 +766,26 @@
     if (imp.scanner && imp.scanner.cancel) imp.scanner.cancel();
   }
   function onLevels(r) {
-    imp.levels = r.levels; imp.sampleRate = r.sampleRate; imp.durationSec = r.durationSec; imp.floorDb = r.floorDb;
+    imp.levelsFull = r.levels; imp.levelsLow = r.levelsLow || r.levels; imp.floorFull = r.floorDb; imp.floorLow = r.floorLowDb !== undefined ? r.floorLowDb : r.floorDb;
+    imp.sampleRate = r.sampleRate; imp.durationSec = r.durationSec;
     if (r.info) imp.info = Object.assign(imp.info || {}, r.info);
     imp.startMs = currentStartMs() ?? imp.startMs; renderImportRange();
     $('#impDuration').textContent = fmtHms(r.durationSec);
-    const thr = Math.min(99, Math.max(1, Math.round(disp(r.floorDb) + 12)));
-    $('#impThr').value = thr; $('#impFloor').textContent = disp(r.floorDb).toFixed(0);
     $('#impResult').hidden = false;
+    $(settings.detectBand === 'low' ? '#impBandLow' : '#impBandFull').checked = true;
+    applyImportBand();
+    log('ייבוא', `הסריקה הסתיימה: אורך ${fmtHms(r.durationSec)}, רמת רקע ${disp(imp.floorFull).toFixed(0)} (תדרים נמוכים: ${disp(imp.floorLow).toFixed(0)})`);
+  }
+  // בחירת הטווח לזיהוי: כל התדרים, או תדרים נמוכים בלבד (רעשי קיר ורצפה; נשימות ואיוושות כמעט לא נכנסות)
+  function applyImportBand() {
+    if (!imp || !imp.levelsFull) return;
+    const low = modeOf('impBand') === 'low';
+    imp.band = low ? 'low' : 'full';
+    imp.levels = low ? imp.levelsLow : imp.levelsFull; imp.floorDb = low ? imp.floorLow : imp.floorFull;
+    // בתדרים נמוכים רמת הרקע נמוכה מאוד, ולכן "רקע + 12" יהיה רגיש מדי; דפיקות דרך הקיר נמצאות בערך באותה רמה בשני הטווחים
+    const thr = Math.min(99, Math.max(1, Math.round(low ? Math.max(disp(imp.floorLow) + 12, disp(imp.floorFull) + 8) : disp(imp.floorDb) + 12)));
+    $('#impThr').value = thr; $('#impFloor').textContent = disp(imp.floorDb).toFixed(0);
     recountImport();
-    log('ייבוא', `הסריקה הסתיימה: אורך ${fmtHms(r.durationSec)}, רמת רקע ${disp(r.floorDb).toFixed(0)}, סף מוצע ${thr}`);
   }
   function recountImport() {
     if (!imp || !imp.levels) return;
@@ -810,34 +844,57 @@
       }
     } catch (e) { impError('הניתוח נכשל: ' + e.message); $('#impReviewBtn').disabled = false; return; }
     imp.review = list.map((e, i) => Object.assign({}, e, { cls: results[i], kind: results[i].kind, selected: true }));
+    // רעש מחזורי (נשימות): אירועים במרווחים סדירים שסווגו כרעש רציף/נשימה/לא ידוע
+    NoiseScan.markRhythmic(imp.review);
+    // רצף מחזורי הופך "רעש רציף" לנשימה רק אם הצליל עצמו מתאים לנשימה: כמעט בלי תדרים נמוכים (גרירה או דפיקה מכילות הרבה)
+    const lfOf = (cls) => (cls && cls.segments && cls.segments.length ? Math.max(...cls.segments.map((g) => g.lfRatio)) : 0);
+    for (const r of imp.review) if (r.rhythmic && ['noise', 'unknown'].includes(r.kind) && lfOf(r.cls) < 0.3) r.kind = 'breath';
+    imp.filter = { kinds: new Set(KIND_ORDER), minLevel: 0, sort: 'time' };
+    $('#revMinLevel').value = 0; $('#revSortTime').checked = true;
     $('#impProgress').hidden = true; $('#impReviewBtn').disabled = false;
     renderReview();
     $('#impReview').hidden = false;
     $('#impReview').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
+  function visibleReview() {
+    const f = imp.filter || { kinds: new Set(KIND_ORDER), minLevel: 0, sort: 'time' };
+    const list = imp.review.map((r, i) => ({ r, i })).filter(({ r }) => f.kinds.has(r.kind || 'unknown') && disp(r.peakDb) >= f.minLevel);
+    list.sort((a, b) => (f.sort === 'level' ? b.r.peakDb - a.r.peakDb || a.r.noiseSec - b.r.noiseSec : a.r.noiseSec - b.r.noiseSec));
+    return list;
+  }
+  function renderReviewFilters() {
+    const f = imp.filter; const counts = {};
+    for (const r of imp.review) { const k = r.kind || 'unknown'; counts[k] = (counts[k] || 0) + 1; }
+    $('#revKinds').innerHTML = KIND_ORDER.filter((k) => counts[k]).map((k) => `<button type="button" class="chip kind-chip ${f.kinds.has(k) ? 'on' : ''}" data-kind="${k}">${KIND_LABEL[k]} <b>${counts[k]}</b></button>`).join('');
+    $('#revMinLevelVal').textContent = f.minLevel;
+  }
   function renderReview() {
+    if (!imp.filter) imp.filter = { kinds: new Set(KIND_ORDER), minLevel: 0, sort: 'time' };
+    renderReviewFilters();
     const ul = $('#impReviewList'); ul.innerHTML = '';
     const startMs = currentStartMs() ?? imp.startMs;
-    imp.review.forEach((r, i) => {
+    const vis = visibleReview();
+    for (const { r, i } of vis) {
       const li = document.createElement('li'); li.className = 'rev' + (r.selected ? '' : ' off'); li.dataset.i = i;
       const ts = startMs + r.noiseSec * 1000;
       li.innerHTML = `
         <label class="rev-main">
           <input type="checkbox" data-act="sel" ${r.selected ? 'checked' : ''}>
           <span class="ev-time"><span class="ltr">${fmtTime(ts)}</span><small class="ltr">${fmtDate(ts)}</small></span>
-          <span class="ev-meta">שיא <b>${disp(r.peakDb).toFixed(0)}</b> · ${fmtDur(r.endSec - r.startSec)} ${kindTag(r.kind)}${r.truncated ? '<span class="tag">קטוע</span>' : ''}</span>
+          <span class="ev-meta">שיא <b>${disp(r.peakDb).toFixed(0)}</b> · ${fmtDur(r.endSec - r.startSec)} ${kindTag(r.kind, [r.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '', segText(r.cls)].filter(Boolean).join('. '))}${r.truncated ? '<span class="tag">קטוע</span>' : ''}</span>
         </label>
         <button class="btn small" data-act="play" title="האזן">▶</button>
         <div class="player" hidden></div>`;
       ul.appendChild(li);
-    });
+    }
+    $('#revShown').textContent = vis.length;
     updateReviewSummary();
   }
   function updateReviewSummary() {
     const sel = imp.review.filter((r) => r.selected).length;
-    const speech = imp.review.filter((r) => r.kind === 'speech').length;
+    const speech = imp.review.filter((r) => r.kind === 'speech').length, breath = imp.review.filter((r) => r.kind === 'breath').length;
     $('#impSelCount').textContent = sel; $('#impSaveBtn').disabled = !sel;
-    $('#impReviewSummary').textContent = `${imp.review.length} אירועים, ${sel} מסומנים לשמירה${speech ? `. ${speech} נשמעים כדיבור (מסומנים בתג), כדאי להאזין להם` : ''}.`;
+    $('#impReviewSummary').textContent = `${imp.review.length} אירועים, ${sel} מסומנים לשמירה${breath ? `. ${breath} נראים כנשימות או רעש מחזורי` : ''}${speech ? `. ${speech} נשמעים כדיבור` : ''}${breath || speech ? ' (מסומנים בתג, אפשר לבטל את סימונם בלחיצה)' : ''}.`;
   }
   async function playReview(li, i) {
     const p = li.querySelector('.player');
@@ -864,7 +921,7 @@
     const saveOne = async (e, samples, sampleRate) => {
       const rec = {
         startTs: Math.round(startMs + e.startSec * 1000), noiseTs: Math.round(startMs + e.noiseSec * 1000), endTs: Math.round(startMs + e.endSec * 1000),
-        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind,
+        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind, rhythmic: !!e.rhythmic,
         sessionId: importId, source: 'file', sourceName: imp.file.name, offsetSec: e.noiseSec, blob: encodeWav(samples, sampleRate),
         uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       };
@@ -884,7 +941,7 @@
     }
     const skipped = imp.review.length - list.length;
     try { await dbPut('scans', { id: uuid(), type: 'file', importId, fileName: imp.file.name, fileSize: imp.file.size, fileLastModified: imp.file.lastModified || 0, startTs: startMs, endTs: Math.round(startMs + imp.durationSec * 1000), scannedAt: Date.now(), updatedAt: Date.now(), deviceId: dev.deviceId, deviceName: dev.deviceName, eventsSaved: saved, threshold: imp.threshold + 100 }); } catch (e) { /* ignore */ }
-    log('ייבוא', `נשמרו ${saved} אירועים מהקובץ ${imp.file.name}${skipped ? ` (${skipped} הוסרו בסקירה)` : ''}. תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)} (${$('#impStartSrc').textContent.replace('מקור: ', '')}), סף ${imp.threshold + 100}`);
+    log('ייבוא', `נשמרו ${saved} אירועים מהקובץ ${imp.file.name}${skipped ? ` (${skipped} הוסרו בסקירה)` : ''}. תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)} (${$('#impStartSrc').textContent.replace('מקור: ', '')}), סף ${imp.threshold + 100} (${imp.band === 'low' ? 'תדרים נמוכים' : 'כל התדרים'})`);
     $('#impProgress').hidden = true; $('#impSaveBtn').disabled = false;
     $('#impSaved').textContent = `נשמרו ${saved} אירועים. הם מופיעים ברשימת האירועים למטה, מסומנים "מקובץ".`;
     renderEvents(); refreshStorage(); renderFixUi();
@@ -917,12 +974,15 @@
     if (b && sel.value !== prev) setTimeInputs($('#fixDate'), $('#fixTime'), b.start);
     renderFixPreview();
   }
+  let fixPreviewSeq = 0;
   async function renderFixPreview() {
     const b = fixBatch(); const el = $('#fixPreview');
     if (!b) { el.textContent = ''; return; }
     const t = readTimeInputs($('#fixDate'), $('#fixTime'));
     if (t === null) { el.textContent = 'הזן תאריך ושעה.'; return; }
+    const seq = ++fixPreviewSeq;
     const scan = await fixScanEntry(b); const durMs = scan ? scan.endTs - scan.startTs : b.end - b.start;
+    if (seq !== fixPreviewSeq) return; // תוצאה ישנה, כבר יש חדשה יותר
     const newStart = modeOf('fixMode') === 'end' ? t - durMs : t; const delta = newStart - b.start;
     el.textContent = delta ? `תזוזה ${fmtDelta(delta)}: ההקלטה תתחיל ב-${fmtDate(newStart)} ${fmtTime(newStart)}${scan ? ` ותסתיים ב-${fmtDate(newStart + durMs)} ${fmtTime(newStart + durMs)}` : ''}. ${b.count} אירועים יוזזו יחד.` : 'הזמן זהה לזמן הנוכחי, אין מה לתקן.';
   }
@@ -972,6 +1032,14 @@
     $('#impSelAll').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { r.selected = true; }); renderReview(); });
     $('#impSelNone').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { r.selected = false; }); renderReview(); });
     $('#impSelNoSpeech').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { if (r.kind === 'speech') r.selected = false; }); renderReview(); });
+    $('#impSelNoBreath').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { if (r.kind === 'breath') r.selected = false; }); renderReview(); });
+    $('#impSelShown').addEventListener('click', () => { if (!imp || !imp.review) return; for (const { r } of visibleReview()) r.selected = true; renderReview(); });
+    $('#impClearShown').addEventListener('click', () => { if (!imp || !imp.review) return; for (const { r } of visibleReview()) r.selected = false; renderReview(); });
+    $('#revKinds').addEventListener('click', (e) => { const b = e.target.closest('button[data-kind]'); if (!b || !imp || !imp.review) return; const k = b.dataset.kind; if (imp.filter.kinds.has(k)) imp.filter.kinds.delete(k); else imp.filter.kinds.add(k); renderReview(); });
+    $('#revKindsAll').addEventListener('click', () => { if (!imp || !imp.review) return; for (const k of KIND_ORDER) imp.filter.kinds.add(k); renderReview(); });
+    $('#revMinLevel').addEventListener('input', () => { if (!imp || !imp.review) return; imp.filter.minLevel = Number($('#revMinLevel').value); renderReview(); });
+    $$('input[name="revSort"]').forEach((r) => r.addEventListener('change', () => { if (!imp || !imp.review) return; imp.filter.sort = modeOf('revSort'); renderReview(); }));
+    $$('input[name="impBand"]').forEach((r) => r.addEventListener('change', applyImportBand));
     window.addEventListener('resize', () => { if (imp && imp.levels) drawTimeline(); });
   }
 
@@ -1186,6 +1254,8 @@
     }
     $('#sampleRate').addEventListener('change', () => { settings.sampleRate = Number($('#sampleRate').value); saveSettings(); if (monitoring) log('מידע', 'קצב הדגימה ישתנה בניטור הבא'); });
     $('#skipSpeech').addEventListener('change', () => { settings.skipSpeech = $('#skipSpeech').checked; saveSettings(); });
+    $('#skipBreath').addEventListener('change', () => { settings.skipBreath = $('#skipBreath').checked; saveSettings(); });
+    $('#lowBand').addEventListener('change', () => { settings.detectBand = $('#lowBand').checked ? 'low' : 'full'; saveSettings(); if (monitoring) log('מידע', `זיהוי לפי ${settings.detectBand === 'low' ? 'תדרים נמוכים בלבד' : 'כל התדרים'} מעכשיו`); });
     $('#keepAwake').addEventListener('change', () => { settings.keepAwake = $('#keepAwake').checked; saveSettings(); if (settings.keepAwake && monitoring) acquireWakeLock(); else if (wakeLock) { wakeLock.release(); } });
     $('#nightFilter').addEventListener('change', () => { currentFilter = $('#nightFilter').value; renderEvents(); });
     $('#bulkDelete').addEventListener('click', async () => {
@@ -1199,7 +1269,10 @@
       log('מידע', `${ids.length} אירועים הוסרו בסקירה ידנית (לא רלוונטיים)`);
       renderEvents(); refreshStorage();
     });
-    $('#bulkSpeech').addEventListener('click', () => { for (const e of filteredEvents()) if (e.kind === 'speech') selectedIds.add(e.id); renderEvents(); });
+    $('#bulkShown').addEventListener('click', () => { for (const e of filteredEvents()) selectedIds.add(e.id); renderEvents(); });
+    $('#kindFilter').addEventListener('click', (e) => { const b = e.target.closest('button[data-kind]'); if (!b) return; const k = b.dataset.kind; if (kindFilter.has(k)) kindFilter.delete(k); else kindFilter.add(k); renderEvents(); });
+    $('#kindAll').addEventListener('click', () => { for (const k of KIND_ORDER) kindFilter.add(k); renderEvents(); });
+    $('#eventSort').addEventListener('change', () => { eventSort = $('#eventSort').value; renderEvents(); });
     $('#bulkClear').addEventListener('click', () => { selectedIds.clear(); renderEvents(); });
     $('#csvBtn').addEventListener('click', exportCsv);
     $('#zipBtn').addEventListener('click', exportZip);

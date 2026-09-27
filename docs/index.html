@@ -86,6 +86,13 @@
   .tag.kind-bang { background: #3f3f46; color: #e4e4e7; }
   .tag.kind-noise { background: #3f3f46; color: #e4e4e7; }
   .tag.kind-speech { background: #78350f; color: #fde68a; }
+  .tag.kind-bangdrag { background: #3f3f46; color: #e4e4e7; }
+  .tag.kind-breath { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+  .tag.kind-unknown { background: #1f2937; color: #9ca3af; }
+  .kind-chip { opacity: .45; }
+  .kind-chip.on { opacity: 1; color: var(--text); border-color: var(--accent); }
+  .filters { background: #0b1220; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+  .filters input[type="range"] { width: 100%; }
   .tag.cloud { background: #164e63; color: #a5f3fc; }
   .tag.pending { background: #1f2937; color: #9ca3af; }
   .field input[type="text"] { width: 12em; max-width: 100%; background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 1rem; }
@@ -163,6 +170,8 @@
   <div class="field"><label for="maxClip">אורך קליפ מרבי (שניות)<small>רעש ארוך יותר יפוצל לכמה קליפים</small></label><input id="maxClip" type="number" min="10" max="600" step="10"></div>
   <div class="field"><label for="sampleRate">איכות הקלטה<small>16 kHz מספיק לדפיקות וגרירות וחוסך מקום</small></label>
     <select id="sampleRate"><option value="16000">16 kHz (חסכוני)</option><option value="32000">32 kHz</option><option value="48000">48 kHz (מלא)</option></select></div>
+  <div class="field"><label for="lowBand">זיהוי לפי תדרים נמוכים בלבד<small>דפיקות על קיר וגרירת רהיטים עוברות דרך הבניין בעיקר מתחת ל-300 Hz. נשימות, איוושות ורוב רעשי הרקע כמעט לא. מומלץ כשהמכשיר ליד המיטה. חל על הניטור החי ועל ברירת המחדל בייבוא.</small></label><input id="lowBand" type="checkbox"></div>
+  <div class="field"><label for="skipBreath">סינון נשימות (ניסיוני)<small>אירועים שנשמעים כנשימה לא יישמרו בניטור חי. בלי זה הם נשמרים עם התג "נשימה" ואפשר לסנן ולמחוק אותם בבוקר.</small></label><input id="skipBreath" type="checkbox"></div>
   <div class="field"><label for="skipSpeech">סינון דיבור (ניסיוני)<small>אירועים שנשמעים כדיבור לא יישמרו כלל. הזיהוי לפי מאפייני קול ועלול לטעות לשני הכיוונים. בלי זה, אירועים כאלה נשמרים עם התג "ייתכן דיבור" ואפשר למחוק אותם בבוקר.</small></label><input id="skipSpeech" type="checkbox"></div>
   <div class="field"><label for="keepAwake">השאר מסך דלוק בזמן ניטור<small>מומלץ. בטלפון: חבר למטען והשתמש ב"מסך לילה"</small></label><input id="keepAwake" type="checkbox"></div>
 </section>
@@ -193,6 +202,11 @@
   </div>
   <div id="impError" class="error" hidden></div>
   <div id="impResult" hidden>
+    <div class="radios" style="margin:0 0 8px">
+      <span class="muted">זיהוי לפי:</span>
+      <label><input type="radio" name="impBand" id="impBandFull" value="full" checked> כל התדרים</label>
+      <label><input type="radio" name="impBand" id="impBandLow" value="low"> תדרים נמוכים בלבד <small class="muted">(רעשי קיר ורצפה; נשימות כמעט לא)</small></label>
+    </div>
     <canvas id="impTimeline" dir="ltr" aria-label="ציר זמן של רמת הרעש בקובץ"></canvas>
     <div class="field full">
       <label for="impThr">סף לזיהוי: <span id="impThrVal"></span> <small>רמת הרקע בקובץ (חציון): <span id="impFloor"></span>. הזז את הסף, מספר האירועים מתעדכן מיד. שניות לפני/אחרי ואורך מרבי נלקחים מההגדרות.</small></label>
@@ -207,7 +221,19 @@
     <div class="row" style="margin:8px 0">
       <button id="impSelAll" class="btn small">בחר הכל</button>
       <button id="impSelNone" class="btn small">נקה הכל</button>
+      <button id="impSelNoBreath" class="btn small">בטל סימון נשימות</button>
       <button id="impSelNoSpeech" class="btn small">בטל סימון של "ייתכן דיבור"</button>
+    </div>
+    <div class="filters">
+      <div class="muted">סינון תצוגה לפי סוג (לחיצה מסתירה/מציגה):</div>
+      <div class="row" style="gap:6px"><div id="revKinds" class="chips" style="margin:0"></div><button id="revKindsAll" class="btn small">הצג הכל</button></div>
+      <label class="muted" style="display:block;margin-top:8px">הצג רק אירועים עם רמת שיא מעל <b id="revMinLevelVal">0</b> <input id="revMinLevel" type="range" min="0" max="100" step="1" value="0"></label>
+      <div class="radios" style="margin-top:4px">
+        <span class="muted">מיון:</span>
+        <label><input type="radio" name="revSort" id="revSortTime" value="time" checked> לפי זמן</label>
+        <label><input type="radio" name="revSort" value="level"> החזקים קודם</label>
+      </div>
+      <div class="row" style="margin-top:8px"><span class="muted">מוצגים <b id="revShown">0</b></span><button id="impSelShown" class="btn small">סמן את המוצגים</button><button id="impClearShown" class="btn small">בטל סימון של המוצגים</button></div>
     </div>
     <ul id="impReviewList" class="revlist"></ul>
     <div class="row top"><button id="impSaveBtn" class="btn primary">💾 שמור <span id="impSelCount">0</span> אירועים מסומנים</button></div>
@@ -240,7 +266,13 @@
     <button id="bulkDelete" class="btn small danger">🗑 מחק מסומנים</button>
     <button id="bulkClear" class="btn small">נקה בחירה</button>
   </div>
-  <div class="row" style="margin-bottom:6px"><button id="bulkSpeech" class="btn small" title="מסמן את כל האירועים שסווגו אוטומטית כדיבור, לבדיקה ומחיקה">סמן את כל "ייתכן דיבור"</button></div>
+  <div class="filters" style="margin-bottom:8px">
+    <div class="row" style="gap:6px"><div id="kindFilter" class="chips" style="margin:0"></div><button id="kindAll" class="btn small">הצג הכל</button></div>
+    <div class="row" style="margin-top:8px">
+      <select id="eventSort" class="btn small"><option value="time">מיון: לפי זמן</option><option value="level">מיון: החזקים קודם</option></select>
+      <button id="bulkShown" class="btn small" title="מסמן את כל האירועים המוצגים אחרי הסינון, למחיקה קבוצתית">סמן את כל המוצגים</button>
+    </div>
+  </div>
   <ul id="events"></ul>
   <div class="row top">
     <button id="csvBtn" class="btn small">ייצוא CSV</button>
