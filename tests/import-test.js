@@ -122,6 +122,60 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
   fs.writeFileSync(path.join(outDir, 'events-import.csv'), csv);
   const tags = await page.$$eval('#events .tag.file', (els) => els.length);
   assert(tags === (await page.evaluate(() => window.__noiseLog.events.length)), `ui: every imported event carries the file tag (${tags})`);
+  // ---- קובץ עם נשימות: סיווג, סינון, מיון, ובחירת תדרים נמוכים ----
+  {
+    await page.setInputFiles('#fileInput', path.join(dir, 'breath_2026-09-28_02-00-00.wav'));
+    await page.waitForFunction(() => !document.querySelector('#impScanBtn').disabled, null, { timeout: 20000 });
+    await page.click('#impScanBtn');
+    await page.waitForFunction(() => !document.querySelector('#impResult').hidden, null, { timeout: 60000 });
+    const nFull = await page.evaluate(() => window.__noiseLog.importState.detected.length);
+    assert(nFull === 15, `breath: full-band detection finds 13 breaths + bang + drag (${nFull} events)`);
+    await page.click('#impReviewBtn');
+    await page.waitForFunction(() => !document.querySelector('#impReview').hidden, null, { timeout: 120000 });
+    const rev = await page.evaluate(() => window.__noiseLog.importState.review.map((r) => ({ kind: r.kind, rhythmic: !!r.rhythmic, t: r.noiseSec, peak: window.__noiseLog.disp(r.peakDb), segs: r.cls.segments.map((g) => g.kind).join(',') })));
+    const bangs = rev.filter((r) => r.kind === 'bang'), breaths = rev.filter((r) => r.kind === 'breath'), noises = rev.filter((r) => r.kind === 'noise');
+    assert(bangs.length === 1 && Math.abs(bangs[0].t - 20) < 0.2, `breath: the wall thump at 20 s is tagged bang (${bangs.map((b) => b.t.toFixed(1)).join(',')})`);
+    assert(noises.length === 1 && Math.abs(noises[0].t - 40) < 0.2, `breath: the drag at 40 s is tagged sustained noise (${noises.map((b) => b.t.toFixed(1) + ':' + b.segs).join(',')})`);
+    assert(breaths.length === rev.length - 2 && breaths.every((b) => b.rhythmic || b.segs.includes('breath')), `breath: all ${breaths.length} others tagged breath (rhythmic: ${breaths.filter((b) => b.rhythmic).length})`);
+    await page.click('#impSelNoBreath');
+    assert((await page.evaluate(() => window.__noiseLog.importState.review.filter((r) => r.selected).length)) === 2, 'breath: "deselect breaths" leaves bang + drag selected');
+    // סינון תצוגה: הסתרת נשימות
+    await page.click('#revKinds button[data-kind="breath"]');
+    assert((await page.$$eval('#impReviewList li.rev', (els) => els.length)) === 2 && (await page.$eval('#revShown', (el) => el.textContent)) === '2', 'breath: kind filter hides breaths from the list');
+    // מיון לפי רמה: הדפיקה ראשונה
+    await page.check('input[name="revSort"][value="level"]');
+    const firstKind = await page.$eval('#impReviewList li.rev:first-child .tag', (el) => el.textContent);
+    assert(firstKind === 'דפיקה', `breath: sort by level puts the bang first (${firstKind})`);
+    // סינון לפי רמה מינימלית
+    await page.click('#revKindsAll');
+    const bangPeak = bangs.length ? bangs[0].peak : 0, dragPeak = noises.length ? noises[0].peak : 0;
+    await page.evaluate((v) => { const el = document.querySelector('#revMinLevel'); el.value = v; el.dispatchEvent(new Event('input')); }, Math.round(Math.max(bangPeak, dragPeak) - 2));
+    assert((await page.$$eval('#impReviewList li.rev', (els) => els.length)) === 1, 'breath: min-level filter leaves only the loudest event');
+    await page.screenshot({ path: path.join(outDir, 'shot-breath-review.png'), fullPage: true });
+    // מעבר לזיהוי לפי תדרים נמוכים: הנשימות לא נכנסות בכלל
+    await page.check('#impBandLow');
+    const nLow = await page.evaluate(() => window.__noiseLog.importState.detected.map((e) => e.noiseSec));
+    assert(nLow.length === 2 && Math.abs(nLow[0] - 20) < 0.2 && Math.abs(nLow[1] - 40) < 0.2, `breath: low-band detection finds only bang + drag (${nLow.map((t) => t.toFixed(1)).join(',')})`);
+    await page.click('#impReviewBtn');
+    await page.waitForFunction(() => !document.querySelector('#impReview').hidden, null, { timeout: 60000 });
+    const before = await page.evaluate(() => window.__noiseLog.events.length);
+    await page.click('#impSaveBtn');
+    await page.waitForFunction((n) => window.__noiseLog.events.length >= n + 2, before, { timeout: 60000 });
+    const saved = await page.evaluate((n) => window.__noiseLog.events.slice(n).map((e) => ({ t: (e.noiseTs - Date.UTC(2026, 8, 27, 23, 0, 0)) / 1000, kind: e.kind })), before);
+    assert(saved.length === 2 && Math.abs(saved[0].t - 20) < 0.2 && Math.abs(saved[1].t - 40) < 0.2 && saved[0].kind === 'bang', `breath: saved bang@02:00:20 and drag@02:00:40 (${JSON.stringify(saved)})`);
+    // סינון ברשימת האירועים
+    await page.click('#kindFilter button[data-kind="bang"]');
+    const shownNoBang = await page.$$eval('#events li.event', (els) => els.length);
+    const total = await page.evaluate(() => window.__noiseLog.events.length);
+    const nBang = await page.evaluate(() => window.__noiseLog.events.filter((e) => e.kind === 'bang').length);
+    assert(shownNoBang === total - nBang && nBang > 0, `events: kind filter hides ${nBang} bangs (${shownNoBang}/${total} shown)`);
+    await page.click('#kindAll');
+    await page.selectOption('#eventSort', 'level');
+    const peaks = await page.$$eval('#events li.event .ev-meta b', (els) => els.map((e) => Number(e.textContent)));
+    assert(peaks.every((v, i) => i === 0 || v <= peaks[i - 1]), 'events: sort by level is descending');
+    await page.selectOption('#eventSort', 'time');
+  }
+
   // ---- תיקון זמן של ייבוא שנשמר ----
   {
     const batches = await page.evaluate(() => window.__noiseLog.importBatches().map((b) => ({ id: b.importId, name: b.sourceName, count: b.count, start: b.start })));
@@ -131,7 +185,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     await page.selectOption('#fixImport', String(wavBatch.id));
     await page.fill('#fixDate', '2026-09-27'); await page.fill('#fixTime', '23:00:40'); await page.dispatchEvent('#fixTime', 'change');
     await page.check('input[name="fixMode"][value="end"]');
-    await page.waitForFunction(() => /תזוזה/.test(document.querySelector('#fixPreview').textContent));
+    await page.waitForFunction(() => /27\.09\.2026 23:00:00/.test(document.querySelector('#fixPreview').textContent), null, { timeout: 10000 });
     const preview = await page.$eval('#fixPreview', (el) => el.textContent);
     assert(/\+1 ימים 00:00:00/.test(preview) && /27\.09\.2026 23:00:00/.test(preview), `fix: preview shows +1 day from end time (${preview})`);
     await page.click('#fixApplyBtn');

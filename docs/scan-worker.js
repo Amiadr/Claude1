@@ -13,7 +13,7 @@ self.onmessage = async (e) => {
     } else if (m.type === 'scan') {
       const r = await scanner.scanLevels((f) => post({ type: 'progress', fraction: f }));
       if (!r) { post({ type: 'error', message: 'הסריקה בוטלה' }); return; }
-      post({ type: 'levels', levels: r.levels, frameSec: r.frameSec, sampleRate: r.sampleRate, durationSec: r.durationSec, floorDb: r.floorDb, info: scanner.info }, [r.levels.buffer]);
+      post({ type: 'levels', levels: r.levels, levelsLow: r.levelsLow, frameSec: r.frameSec, sampleRate: r.sampleRate, durationSec: r.durationSec, floorDb: r.floorDb, floorLowDb: r.floorLowDb, info: scanner.info }, [r.levels.buffer, r.levelsLow.buffer]);
     } else if (m.type === 'extract') {
       for (const rg of m.ranges) {
         const samples = await scanner.extract(rg.t0, rg.t1);

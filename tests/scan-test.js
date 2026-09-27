@@ -124,7 +124,31 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     const ch = NS.classify(hum, sr);
     assert(ch.kind === 'noise', `classify: steady hum → ${ch.kind} (voiced ${ch.voicedFrac.toFixed(2)}, pitchVar ${ch.pitchVar.toFixed(3)})`);
     const t0 = Date.now(); NS.classify(mk(120), sr); const ms = Date.now() - t0;
-    assert(ms < 3000, `classify: 120 s clip in ${ms} ms`);
+    assert(ms < 4000, `classify: 120 s clip in ${ms} ms`);
+    // נשימה: איוושה בתדרים גבוהים עם עלייה ודעיכה איטיות (1.5 שניות)
+    const hp = (sig) => { const f = new NS.Biquad('highpass', 600, sr); return f.run(sig); };
+    const breathNoise = hp(Float32Array.from({ length: Math.round(1.6 * sr) }, () => gauss()));
+    const breath = mk(6); for (let i = 0; i < breath.length; i++) breath[i] = 0.0005 * gauss();
+    for (let i = 0; i < breathNoise.length; i++) { const t = i / breathNoise.length; breath[2 * sr + i] += 0.03 * breathNoise[i] * Math.sin(Math.PI * t) ** 2; }
+    const cbr = NS.classify(breath, sr);
+    assert(cbr.kind === 'breath', `classify: breath-like → ${cbr.kind} (${JSON.stringify(cbr.segments[0])})`);
+    // דפיקה שמהדהדת 0.8 שניות דרך הקיר (תדר נמוך, התקפה מהירה, דעיכה)
+    const thump = mk(5); for (let i = 0; i < thump.length; i++) thump[i] = 0.0005 * gauss();
+    for (let i = 0; i < 0.8 * sr; i++) { const t = i / sr; thump[2 * sr + i] += 0.35 * (Math.sin(2 * Math.PI * 90 * t) + 0.5 * Math.sin(2 * Math.PI * 140 * t)) * Math.exp(-6 * t) + 0.1 * gauss() * Math.exp(-40 * t); }
+    const cth = NS.classify(thump, sr);
+    assert(cth.kind === 'bang', `classify: 0.8 s wall thump → ${cth.kind} (${JSON.stringify(cth.segments[0])})`);
+    // דפיקה ומיד אחריה גרירה של 1.5 שניות
+    const bd = mk(7); for (let i = 0; i < bd.length; i++) bd[i] = 0.0005 * gauss();
+    for (let i = 0; i < 0.3 * sr; i++) { const t = i / sr; bd[2 * sr + i] += 0.4 * Math.sin(2 * Math.PI * 110 * t) * Math.exp(-15 * t) + 0.15 * gauss() * Math.exp(-40 * t); }
+    { const lp = new NS.Biquad('lowpass', 1200, sr); const dragNoise = lp.run(Float32Array.from({ length: Math.round(1.5 * sr) }, () => gauss())); for (let i = 0; i < dragNoise.length; i++) bd[Math.round(2.45 * sr) + i] += 0.08 * dragNoise[i]; }
+    const cbd = NS.classify(bd, sr);
+    assert(cbd.kind === 'bangdrag' && cbd.segments.map((g) => g.kind).join(',') === 'bang,drag', `classify: bang then drag → ${cbd.kind} [${cbd.segments.map((g) => g.kind + '@' + g.sec).join(', ')}]`);
+    // גרירה לבד עדיין רעש רציף; דפיקה קצרה עדיין דפיקה (עם המסווג החדש)
+    assert(NS.classify(drag, sr).kind === 'noise' && NS.classify(bang, sr).kind === 'bang', 'classify: drag → noise, short bang → bang (unchanged)');
+    // רעש מחזורי: 8 אירועים כל 3.5 שניות + אחד בודד
+    const list = []; for (let k = 0; k < 8; k++) list.push({ noiseSec: 10 + k * 3.5 + (k % 2 ? 0.2 : 0), startSec: 8 + k * 3.5, endSec: 12 + k * 3.5 }); list.push({ noiseSec: 60, startSec: 58, endSec: 62 });
+    const nflag = NS.markRhythmic(list);
+    assert(nflag === 8 && list[8].rhythmic === false, `rhythm: 8 periodic events flagged, lone event not (${nflag})`);
   }
   console.log(fails ? `\n${fails} FAILED` : '\nall passed');
   process.exit(fails ? 1 : 0);

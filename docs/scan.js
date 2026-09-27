@@ -45,36 +45,63 @@
     return { m4a: 'mp4', mp4: 'mp4', aac: 'mp4', '3gp': 'mp4', mp3: 'mp3', wav: 'wav', ogg: 'ogg', opus: 'ogg', flac: 'flac', webm: 'webm', amr: 'amr' }[ext] || 'unknown';
   }
 
-  // ---------- צבירת רמות ----------
+  // ---------- מסנן biquad (Butterworth מסדר 2, נוסחאות RBJ) ----------
+  const LOW_BAND_HZ = 300;  // "רעשי מבנה": דפיקות על קיר וגרירת רהיטים עוברים דרך הבניין בעיקר מתחת ל-300 Hz
+  class Biquad {
+    constructor(type, fc, fs, q) {
+      q = q || Math.SQRT1_2;
+      const w0 = (2 * Math.PI * fc) / fs, cw = Math.cos(w0), alpha = Math.sin(w0) / (2 * q);
+      let b0, b1, b2;
+      if (type === 'lowpass') { b0 = (1 - cw) / 2; b1 = 1 - cw; b2 = b0; }
+      else { b0 = (1 + cw) / 2; b1 = -(1 + cw); b2 = b0; }
+      const a0 = 1 + alpha;
+      this.b0 = b0 / a0; this.b1 = b1 / a0; this.b2 = b2 / a0; this.a1 = (-2 * cw) / a0; this.a2 = (1 - alpha) / a0;
+      this.x1 = 0; this.x2 = 0; this.y1 = 0; this.y2 = 0;
+    }
+    run(x, out) {
+      out = out || new Float32Array(x.length);
+      let x1 = this.x1, x2 = this.x2, y1 = this.y1, y2 = this.y2;
+      const { b0, b1, b2, a1, a2 } = this;
+      for (let i = 0; i < x.length; i++) { const v = x[i]; const y = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = v; y2 = y1; y1 = y; out[i] = y; }
+      this.x1 = x1; this.x2 = x2; this.y1 = y1; this.y2 = y2;
+      return out;
+    }
+  }
+
+  // ---------- צבירת רמות (כל התדרים + תדרים נמוכים בלבד) ----------
   class LevelAccumulator {
     constructor(sampleRate, estDurationSec) {
       this.sr = sampleRate;
       this.frameLen = Math.max(1, Math.round(sampleRate * FRAME_SEC));
       const n = Math.ceil(((estDurationSec || 60) * sampleRate) / this.frameLen) + 64;
-      this.sumSq = new Float64Array(n); this.count = new Uint32Array(n); this.maxFrame = -1;
+      this.sumSq = new Float64Array(n); this.sumSqLf = new Float64Array(n); this.count = new Uint32Array(n); this.maxFrame = -1;
+      this.lpf = new Biquad('lowpass', LOW_BAND_HZ, sampleRate); this.lpf2 = new Biquad('lowpass', LOW_BAND_HZ, sampleRate);
+      this.tmp = null;
     }
     ensure(idx) {
       if (idx < this.sumSq.length) return;
       let n = this.sumSq.length; while (n <= idx) n *= 2;
-      const s = new Float64Array(n); s.set(this.sumSq); const c = new Uint32Array(n); c.set(this.count);
-      this.sumSq = s; this.count = c;
+      const s = new Float64Array(n); s.set(this.sumSq); const sl = new Float64Array(n); sl.set(this.sumSqLf); const c = new Uint32Array(n); c.set(this.count);
+      this.sumSq = s; this.sumSqLf = sl; this.count = c;
     }
     add(samples, startSample) {
+      if (!this.tmp || this.tmp.length < samples.length) this.tmp = new Float32Array(samples.length);
+      const lf = this.lpf2.run(this.lpf.run(samples, this.tmp), this.tmp); // 4 קטבים
       const L = this.frameLen; let i = 0;
       while (i < samples.length) {
         const abs = startSample + i; const f = Math.floor(abs / L);
         const n = Math.min((f + 1) * L - abs, samples.length - i);
         this.ensure(f);
-        let ss = 0; for (let k = 0; k < n; k++) { const v = samples[i + k]; ss += v * v; }
-        this.sumSq[f] += ss; this.count[f] += n;
+        let ss = 0, sl = 0; for (let k = 0; k < n; k++) { const v = samples[i + k]; ss += v * v; const w = lf[i + k]; sl += w * w; }
+        this.sumSq[f] += ss; this.sumSqLf[f] += sl; this.count[f] += n;
         if (f > this.maxFrame) this.maxFrame = f;
         i += n;
       }
     }
     levels() {
-      const n = this.maxFrame + 1; const out = new Float32Array(n);
-      for (let f = 0; f < n; f++) { const c = this.count[f]; out[f] = c ? 10 * Math.log10(Math.max(this.sumSq[f] / c, 1e-12)) : -100; }
-      return out;
+      const n = this.maxFrame + 1; const out = new Float32Array(n), lf = new Float32Array(n);
+      for (let f = 0; f < n; f++) { const c = this.count[f]; out[f] = c ? 10 * Math.log10(Math.max(this.sumSq[f] / c, 1e-12)) : -100; lf[f] = c ? 10 * Math.log10(Math.max(this.sumSqLf[f] / c, 1e-12)) : -100; }
+      return { full: out, low: lf };
     }
   }
 
@@ -166,8 +193,8 @@
         acc.add(samples, startSample);
       }, onProgress);
       if (this.cancelled) return null;
-      const levels = acc ? acc.levels() : new Float32Array(0);
-      return { levels, frameSec: FRAME_SEC, sampleRate: this.outRate || this.info.sampleRate, durationSec: levels.length * FRAME_SEC, floorDb: median(levels) };
+      const lv = acc ? acc.levels() : { full: new Float32Array(0), low: new Float32Array(0) };
+      return { levels: lv.full, levelsLow: lv.low, frameSec: FRAME_SEC, sampleRate: this.outRate || this.info.sampleRate, durationSec: lv.full.length * FRAME_SEC, floorDb: median(lv.full), floorLowDb: median(lv.low) };
     }
   }
 
@@ -520,33 +547,49 @@
   }
 
 
-  // ---------- סיווג גס של קליפ: דפיקה / רעש רציף / ייתכן דיבור ----------
-  // מבוסס על מאפיינים אקוסטיים פשוטים (משך הקטע הרועש, אימפולסיביות, מחזוריות עם גובה צליל משתנה, מספר הברות).
-  // זה רמז לסקירה, לא זיהוי מדויק.
+  // ---------- סיווג גס של קליפ ----------
+  // מחלק את הקטע הרועש למקטעים (לפי הפסקות שקט), ומסווג כל מקטע לפי מאפיינים אקוסטיים פשוטים:
+  //   דפיקה  – התקפה מהירה (< 30ms), אנרגיה שדועכת, בעיקר תדרים נמוכים
+  //   נשימה  – עלייה איטית, איוושה בתדרים גבוהים, כמעט בלי תדרים נמוכים, לא קולי
+  //   רעש רציף (גרירה וכד') – מתמשך בלי דעיכה
+  //   דיבור  – מחזוריות עם גובה צליל משתנה והברות (נמדד על כל הקליפ)
+  // התוצאה היא רמז לסקירה, לא זיהוי ודאי.
   function classify(samples, sr) {
     const factor = Math.max(1, Math.round(sr / 8000)); const r = sr / factor;
     const n = Math.floor(samples.length / factor);
-    const empty = { kind: 'unknown', loudSec: 0, voicedFrac: 0, crestDb: 0, pitchVar: 0, onsets: 0 };
+    const empty = { kind: 'unknown', loudSec: 0, voicedFrac: 0, crestDb: 0, pitchVar: 0, onsets: 0, segments: [] };
     if (n < r * 0.1) return empty;
     const x = new Float32Array(n);
     let mean = 0;
     for (let i = 0; i < n; i++) { let acc = 0; const o = i * factor; for (let k = 0; k < factor; k++) acc += samples[o + k]; x[i] = acc / factor; mean += x[i]; }
     mean /= n; for (let i = 0; i < n; i++) x[i] -= mean;
+    const lo = new Biquad('lowpass', LOW_BAND_HZ, r).run(x); new Biquad('lowpass', LOW_BAND_HZ, r).run(lo, lo);
+    const hi = new Biquad('highpass', 2000, r).run(x); new Biquad('highpass', 2000, r).run(hi, hi);
     const frame = Math.round(r * 0.03), hop = Math.round(r * 0.01);
     const nf = Math.max(0, Math.floor((n - frame) / hop) + 1);
     if (nf < 3) return empty;
-    const rms = new Float32Array(nf); let peakRms = 0, peakAbs = 0;
-    for (let f = 0; f < nf; f++) { let acc = 0; const o = f * hop; for (let i = 0; i < frame; i++) { const v = x[o + i]; acc += v * v; } rms[f] = Math.sqrt(acc / frame); if (rms[f] > peakRms) peakRms = rms[f]; }
+    const rms = new Float32Array(nf), eLo = new Float32Array(nf), eHi = new Float32Array(nf);
+    let peakRms = 0, peakAbs = 0;
+    for (let f = 0; f < nf; f++) {
+      let a = 0, b = 0, c = 0; const o = f * hop;
+      for (let i = 0; i < frame; i++) { const v = x[o + i]; a += v * v; const w = lo[o + i]; b += w * w; const u = hi[o + i]; c += u * u; }
+      rms[f] = Math.sqrt(a / frame); eLo[f] = b / frame; eHi[f] = c / frame; if (rms[f] > peakRms) peakRms = rms[f];
+    }
     for (let i = 0; i < n; i++) { const a = Math.abs(x[i]); if (a > peakAbs) peakAbs = a; }
     const gate = peakRms * 0.1; // 20 dB מתחת לשיא
-    const minLag = Math.round(r / 400), maxLag = Math.round(r / 80); // גובה צליל 80–400 Hz
-    let loud = 0, voiced = 0, sumLoudRms = 0, onsets = 0, prevLoud = false; const lags = [];
+    // מקטעים רועשים; הפסקות קצרות מ-150ms לא מפרידות
+    const segs = []; let cur = null, quiet = 0, rawOnsets = 0, prevLoud = false;
     for (let f = 0; f < nf; f++) {
       const isLoud = rms[f] >= gate;
-      if (isLoud && !prevLoud) onsets++;
+      if (isLoud && !prevLoud) rawOnsets++;
       prevLoud = isLoud;
-      if (!isLoud) continue;
-      loud++; sumLoudRms += rms[f];
+      if (isLoud) { if (!cur) cur = { a: f, b: f }; cur.b = f; quiet = 0; }
+      else if (cur) { quiet++; if (quiet > 15) { segs.push(cur); cur = null; quiet = 0; } }
+    }
+    if (cur) segs.push(cur);
+    const minLag = Math.round(r / 400), maxLag = Math.round(r / 80); // גובה צליל 80–400 Hz
+    let loud = 0, voiced = 0, sumLoudRms = 0; const lags = [];
+    const voicedOf = (f) => {
       const o = f * hop; let best = 0, bestLag = 0, e0 = 0;
       for (let i = 0; i < frame; i++) e0 += x[o + i] * x[o + i];
       for (let lag = minLag; lag <= maxLag; lag++) {
@@ -555,18 +598,67 @@
         const v = c / Math.sqrt((e0 + 1e-12) * (e1 + 1e-12));
         if (v > best) { best = v; bestLag = lag; }
       }
-      if (best >= 0.6) { voiced++; lags.push(bestLag); }
+      return { best, bestLag };
+    };
+    const segments = [];
+    for (const sg of segs) {
+      const len = sg.b - sg.a + 1; let peakF = sg.a, segPeak = 0, sumRms = 0, sLo = 0, sAll = 0, sHi = 0, segVoiced = 0;
+      for (let f = sg.a; f <= sg.b; f++) {
+        if (rms[f] > segPeak) { segPeak = rms[f]; peakF = f; }
+        sumRms += rms[f]; sLo += eLo[f]; sHi += eHi[f]; sAll += rms[f] * rms[f];
+        if (rms[f] >= gate) { loud++; sumLoudRms += rms[f]; const v = voicedOf(f); if (v.best >= 0.6) { voiced++; segVoiced++; lags.push(v.bestLag); } }
+      }
+      const third = Math.max(1, Math.floor(len / 3));
+      let first = 0, mid = 0, last = 0;
+      for (let f = sg.a; f < sg.a + third; f++) first += rms[f];
+      for (let f = sg.a + third; f < sg.a + 2 * third; f++) mid += rms[f];
+      for (let f = sg.b - third + 1; f <= sg.b; f++) last += rms[f];
+      const attackFrames = peakF - sg.a; const decayRatio = last / Math.max(first, 1e-9);
+      const hump = mid / Math.max((first + last) / 2, 1e-9); // מעטפת "גבעה" (עלייה ואז ירידה) לעומת מעטפת שטוחה
+      const lfRatio = sLo / Math.max(sAll, 1e-12), hfRatio = sHi / Math.max(sAll, 1e-12);
+      const dur = (len * hop) / r; const vFrac = segVoiced / len;
+      let kind;
+      if (attackFrames <= 3 && dur <= 1.5 && decayRatio < 0.35) kind = 'bang';
+      else if (dur >= 0.3 && dur <= 4 && attackFrames >= 5 && lfRatio < 0.2 && hfRatio > 0.1 && hump >= 1.4 && vFrac < 0.3) kind = 'breath';
+      else kind = 'drag';
+      segments.push({ kind, sec: (sg.a * hop) / r, dur: Math.round(dur * 100) / 100, attackMs: Math.round((attackFrames * hop * 1000) / r), decayRatio: Math.round(decayRatio * 100) / 100, hump: Math.round(hump * 100) / 100, lfRatio: Math.round(lfRatio * 100) / 100, hfRatio: Math.round(hfRatio * 100) / 100 });
     }
     const loudSec = (loud * hop) / r;
     const voicedFrac = loud ? voiced / loud : 0;
     const crestDb = 20 * Math.log10((peakAbs + 1e-9) / (sumLoudRms / Math.max(1, loud) + 1e-9));
     let pitchVar = 0;
     if (lags.length >= 5) { const m = lags.reduce((a, b) => a + b, 0) / lags.length; const v = lags.reduce((a, b) => a + (b - m) * (b - m), 0) / lags.length; pitchVar = Math.sqrt(v) / m; }
+    const onsets = rawOnsets;
     let kind;
-    if (loudSec <= 0.5 && crestDb >= 10) kind = 'bang';
-    else if (voicedFrac >= 0.35 && loudSec >= 0.4 && pitchVar >= 0.06 && onsets >= 2) kind = 'speech';
+    const bangs = segments.filter((g) => g.kind === 'bang').length, drags = segments.filter((g) => g.kind === 'drag').length, breaths = segments.filter((g) => g.kind === 'breath').length;
+    const breathSec = segments.filter((g) => g.kind === 'breath').reduce((a, g) => a + g.dur, 0), totalSec = segments.reduce((a, g) => a + g.dur, 0);
+    if (voicedFrac >= 0.35 && loudSec >= 0.4 && pitchVar >= 0.06 && onsets >= 2) kind = 'speech';
+    else if (bangs && drags) kind = 'bangdrag';
+    else if (bangs) kind = 'bang';
+    else if (breaths && breathSec >= 0.7 * totalSec) kind = 'breath';
     else kind = 'noise';
-    return { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets };
+    return { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets, segments };
+  }
+
+  // ---------- רעש מחזורי (נשימות): רצף אירועים במרווחים קבועים ----------
+  // מסמן rhythmic=true על אירועים שנמצאים בתוך רצף של 6+ אירועים במרווחים סדירים (1.5–8 שניות, סטייה < 30%).
+  function markRhythmic(list) {
+    const items = list.map((e, i) => ({ i, t: e.noiseSec, dur: e.endSec - e.startSec, peak: e.peakDb, kind: e.kind })).sort((a, b) => a.t - b.t);
+    const flagged = new Set();
+    const W = 6;
+    for (let k = 0; k + W <= items.length; k++) {
+      const win = items.slice(k, k + W);
+      if (win.some((w) => w.dur > 12 || w.kind === 'bang' || w.kind === 'bangdrag' || w.kind === 'speech')) continue;
+      const peaks = win.map((w) => w.peak).filter((v) => typeof v === 'number');
+      if (peaks.length && Math.max(...peaks) - Math.min(...peaks) > 10) continue; // רמות דומות, כמו נשימות; דפיקה חזקה באמצע שוברת את הרצף
+      const iv = []; for (let j = 1; j < W; j++) iv.push(win[j].t - win[j - 1].t);
+      const m = iv.reduce((a, b) => a + b, 0) / iv.length;
+      if (m < 1.5 || m > 8) continue;
+      const sd = Math.sqrt(iv.reduce((a, b) => a + (b - m) * (b - m), 0) / iv.length);
+      if (sd / m < 0.3) for (const w of win) flagged.add(w.i);
+    }
+    list.forEach((e, i) => { e.rhythmic = flagged.has(i); });
+    return flagged.size;
   }
 
   async function open(file) {
@@ -596,5 +688,5 @@
     return c;
   }
 
-  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
+  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, markRhythmic, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
 })(typeof self !== 'undefined' ? self : globalThis);
