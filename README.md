@@ -29,8 +29,13 @@
 
 הדפדפן דורש HTTPS (או localhost) כדי לפתוח מיקרופון. שתי דרכים:
 
-1. **GitHub Pages (מומלץ לטלפון).** במאגר: Settings → Pages → Source: *Deploy from a branch* → Branch: הענף הזה (או `main` אחרי מיזוג), Folder: `/docs` → Save. אחרי דקה הדף זמין ב-`https://<user>.github.io/<repo>/`. פותחים בטלפון, ובתפריט הדפדפן "הוסף למסך הבית".
-2. **מחשב נייד (הכי אמין).** `cd docs && python3 -m http.server 8000` ואז `http://localhost:8000` ב-Chrome. מחשב מחובר לחשמל עם כיבוי שינה אוטומטית לא "נרדם" ולא נחנק על ידי חיסכון בסוללה כמו טלפון.
+1. **אירוח סטטי חינמי (מומלץ לטלפון).** ה-`docs/` היא תיקייה סטטית, וכל שירות אירוח סטטי מגיש אותה ב-HTTPS:
+   - **Cloudflare Pages** (חינם, עובד גם עם מאגר פרטי): ב-[dash.cloudflare.com](https://dash.cloudflare.com) → Workers & Pages → Create → Pages → Connect to Git → בוחרים את המאגר → Build command ריק, Build output directory: `docs` → Save and Deploy. הכתובת: `https://<שם>.pages.dev`, ומתעדכנת אוטומטית בכל push ל-`main`.
+   - **Netlify** (חינם, גם מאגר פרטי): Add new site → Import an existing project → GitHub → המאגר → Publish directory: `docs` → Deploy. הכתובת: `https://<שם>.netlify.app`. בלי Git בכלל: Netlify Drop, גוררים את התיקייה `docs` לדפדפן ומקבלים כתובת (ואז מעלים שוב ידנית בכל עדכון).
+   - **GitHub Pages**: חינם רק למאגר ציבורי (למאגר פרטי דורש GitHub Pro). אם המאגר ציבורי: Settings → Pages → Deploy from a branch → `main`, Folder `/docs`. במאגר אין שום דבר רגיש: ההקלטות נשארות במכשיר, וה-Client ID של גוגל הוא מזהה ציבורי שמוגבל לכתובות שרשמתם.
+   בכל המקרים: פותחים את הכתובת בטלפון, ובתפריט הדפדפן "הוסף למסך הבית". את אותה כתובת רושמים ב-Google Cloud כ-Authorized JavaScript origin (ראו סעיף Drive).
+2. **מחשב נייד (הכי אמין לניטור לילי).** `cd docs && python3 -m http.server 8000` ואז `http://localhost:8000` ב-Chrome. מחשב מחובר לחשמל עם כיבוי שינה אוטומטית לא "נרדם" ולא נחנק על ידי חיסכון בסוללה כמו טלפון. `localhost` נחשב מאובטח, אז המיקרופון עובד, וגם `http://localhost:8000` אפשר לרשום בגוגל.
+3. **בטלפון בלי שרת בכלל (אנדרואיד):** מתקינים את Termux, מעתיקים את תיקיית `docs` לטלפון, ומריצים בה `python -m http.server 8000`. אז `http://localhost:8000` ב-Chrome של הטלפון עובד כמו אתר HTTPS, גם בלי אינטרנט. מתאים למי שנוח לו עם טרמינל.
 
 **טיפים לשימוש**
 - להניח את המכשיר קרוב לקיר או לרצפה שמהם מגיע הרעש, מחובר למטען.
@@ -79,7 +84,7 @@
 1. ב-[Google Cloud Console](https://console.cloud.google.com/) יוצרים פרויקט חדש (השם לא משנה).
 2. APIs & Services → Library → מחפשים "Google Drive API" → Enable.
 3. APIs & Services → OAuth consent screen → User type: External → ממלאים שם לאפליקציה ואימייל → ב-Test users מוסיפים את כתובת הג'ימייל שלכם (ושל כל מי שישתמש). האפליקציה נשארת במצב Testing; אין צורך באימות של גוגל.
-4. APIs & Services → Credentials → Create credentials → OAuth client ID → Application type: Web application. ב-Authorized JavaScript origins מוסיפים את כתובת האתר, למשל `https://amiadr.github.io`, וגם `http://localhost:8000` אם מריצים במחשב. Authorized redirect URIs נשאר ריק.
+4. APIs & Services → Credentials → Create credentials → OAuth client ID → Application type: Web application. ב-Authorized JavaScript origins מוסיפים את כתובת האתר כפי שהיא מוגשת, למשל `https://noise-log.pages.dev` או `https://noise-log.netlify.app` (בלי נתיב אחרי הדומיין), וגם `http://localhost:8000` אם מריצים במחשב או ב-Termux. Authorized redirect URIs נשאר ריק.
 5. מעתיקים את ה-Client ID (מסתיים ב-`.apps.googleusercontent.com`) לשדה בכרטיס Google Drive באפליקציה, או ל-`docs/config.js` כדי שיהיה בכל המכשירים.
 
 ההרשאה שמתבקשת היא `drive.file`: האפליקציה רואה ויכולה לשנות רק קבצים שהיא עצמה יצרה. הטוקן תקף לשעה ומתחדש בשקט כשהחשבון מחובר בדפדפן; אם ההתחדשות נכשלת, לוחצים "התחבר" שוב. שום דבר לא עובר דרך שרת של האפליקציה, הכל ישירות בין הדפדפן ל-Google.
