@@ -31,8 +31,10 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     await page.waitForFunction(() => !document.querySelector('#impError').hidden || !document.querySelector('#impScanBtn').disabled, null, { timeout: 20000 });
     const err = await page.$eval('#impError', (el) => (el.hidden ? null : el.textContent));
     if (err) return { error: err };
-    const info = { start: await page.inputValue('#impStart'), src: await page.$eval('#impStartSrc', (el) => el.textContent), fmt: await page.$eval('#impFormat', (el) => el.textContent), dur: await page.$eval('#impDuration', (el) => el.textContent) };
-    if (opts.start) await page.evaluate((v) => { const el = document.querySelector('#impStart'); el.value = v; el.dispatchEvent(new Event('change')); }, opts.start);
+    const info = { start: (await page.inputValue('#impDate')) + 'T' + (await page.inputValue('#impTime')), src: await page.$eval('#impStartSrc', (el) => el.textContent), fmt: await page.$eval('#impFormat', (el) => el.textContent), dur: await page.$eval('#impDuration', (el) => el.textContent) };
+    if (opts.start) { const [d, t] = opts.start.split('T'); await page.fill('#impDate', d); await page.fill('#impTime', t); await page.dispatchEvent('#impTime', 'change'); }
+    if (opts.mode === 'end') await page.check('#impModeEnd');
+    info.range = await page.$eval('#impRange', (el) => el.textContent);
     await page.click('#impScanBtn');
     await page.waitForFunction(() => !document.querySelector('#impResult').hidden || !document.querySelector('#impError').hidden, null, { timeout: 60000 });
     const err2 = await page.$eval('#impError', (el) => (el.hidden ? null : el.textContent));
@@ -102,8 +104,11 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
   checkSaved('mp3', r, localMs(2026, 9, 26, 23, 0, 0), 0.15, [5, 12, 25], ['bang', 'noise', 'bang']);
 
   // ---- OGG/Opus: פענוח מלא בדף הראשי, זמן ידני ----
-  r = await importFile('test.ogg', { start: '2026-09-27T01:30:00', play: false });
-  checkSaved('ogg', r, localMs(2026, 9, 27, 1, 30, 0), 0.15, [5, 12, 25], ['bang', 'noise', 'bang']);
+  r = await importFile('test.ogg', { start: '2026-09-27T01:30:40', mode: 'end', play: false });
+  assert(/עדיין לא ידוע/.test(r.range), `ogg: end-mode with unknown duration defers the start time (${r.range})`);
+  checkSaved('ogg (end mode)', r, localMs(2026, 9, 27, 1, 30, 0), 0.15, [5, 12, 25], ['bang', 'noise', 'bang']);
+  const rangeAfter = await page.$eval('#impRange', (el) => el.textContent);
+  assert(/27\.09\.2026 01:30:00 עד 27\.09\.2026 01:30:40/.test(rangeAfter), `ogg: range computed from end time after scan (${rangeAfter})`);
 
   // ---- M4A/AAC: תלוי בקודקים של הדפדפן (Chromium ללא AAC → שגיאה מסודרת) ----
   r = await importFile('Voice 001.m4a', { play: false });
@@ -117,6 +122,28 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
   fs.writeFileSync(path.join(outDir, 'events-import.csv'), csv);
   const tags = await page.$$eval('#events .tag.file', (els) => els.length);
   assert(tags === (await page.evaluate(() => window.__noiseLog.events.length)), `ui: every imported event carries the file tag (${tags})`);
+  // ---- תיקון זמן של ייבוא שנשמר ----
+  {
+    const batches = await page.evaluate(() => window.__noiseLog.importBatches().map((b) => ({ id: b.importId, name: b.sourceName, count: b.count, start: b.start })));
+    const wavBatch = batches.find((b) => b.name === 'night_2026-09-26_23-00-00.wav');
+    assert(wavBatch && wavBatch.count === 2 && wavBatch.start === localMs(2026, 9, 26, 23, 0, 0), `fix: wav import batch found (${JSON.stringify(wavBatch)})`);
+    await page.evaluate(() => { document.querySelector('#fixBox').open = true; });
+    await page.selectOption('#fixImport', String(wavBatch.id));
+    await page.fill('#fixDate', '2026-09-27'); await page.fill('#fixTime', '23:00:40'); await page.dispatchEvent('#fixTime', 'change');
+    await page.check('input[name="fixMode"][value="end"]');
+    await page.waitForFunction(() => /תזוזה/.test(document.querySelector('#fixPreview').textContent));
+    const preview = await page.$eval('#fixPreview', (el) => el.textContent);
+    assert(/\+1 ימים 00:00:00/.test(preview) && /27\.09\.2026 23:00:00/.test(preview), `fix: preview shows +1 day from end time (${preview})`);
+    await page.click('#fixApplyBtn');
+    await page.waitForFunction((id) => window.__noiseLog.events.filter((e) => e.sessionId === id).every((e) => e.timeCorrected), wavBatch.id, { timeout: 10000 });
+    const fixed = await page.evaluate((id) => window.__noiseLog.events.filter((e) => e.sessionId === id).map((e) => ({ noiseTs: e.noiseTs, orig: e.originalNoiseTs })), wavBatch.id);
+    assert(fixed.length === 2 && fixed.every((e) => e.noiseTs - e.orig === 86400000), 'fix: both events shifted by exactly one day, original kept');
+    assert(await page.$$eval('#events .tag', (els) => els.filter((t) => t.textContent === 'זמן תוקן').length) === 2, 'fix: cards show "time corrected" tag');
+    const scans = await page.evaluate(() => window.__noiseLog.dbGetAll('scans'));
+    const sc = scans.find((x) => x.importId === wavBatch.id);
+    assert(sc && sc.startTs === localMs(2026, 9, 27, 23, 0, 0) && sc.updatedAt, 'fix: scan-log entry moved with the events');
+  }
+
   // ---- מחיקה קבוצתית ברשימה ----
   const total = await page.evaluate(() => window.__noiseLog.events.length);
   await page.click('#events li.event:nth-child(1) input[data-act="sel"]');

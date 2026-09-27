@@ -85,6 +85,27 @@ const mockState = async () => (await fetch(`http://127.0.0.1:${MOCK}/__state`)).
   assert(await A.page.$$eval('#events .tag.cloud', (els) => els.map((e) => e.textContent)).then((t) => t.length === 2 && t.every((x) => /הועלה · טלפון/.test(x))), 'A: cards show "uploaded · טלפון"');
   await A.page.screenshot({ path: path.join(outDir, 'shot-drive-A.png'), fullPage: true });
 
+  // ---- A מתקן את הזמן של הייבוא (+4 ימים ושעה → אוקטובר): שינוי שם ומעבר תיקייה ב-Drive ----
+  {
+    const batch = (await A.page.evaluate(() => window.__noiseLog.importBatches().map((b) => ({ id: b.importId, start: b.start }))))[0];
+    await A.page.evaluate(() => { document.querySelector('#fixBox').open = true; });
+    await A.page.selectOption('#fixImport', String(batch.id));
+    await A.page.fill('#fixDate', '2026-10-01'); await A.page.fill('#fixTime', '00:00:00'); await A.page.dispatchEvent('#fixTime', 'change');
+    A.dialogs.length = 0;
+    await A.page.click('#fixApplyBtn');
+    await A.page.waitForFunction(() => window.__noiseLog.events.every((e) => e.timeCorrected), null, { timeout: 10000 });
+    assert(A.dialogs.length === 1 && /\+4 ימים 01:00:00/.test(A.dialogs[0]), `A: fix confirmation states the shift (${A.dialogs[0]})`);
+    st = await sync(A);
+    assert(/עודכנו 2 שמות/.test(st), `A: sync renamed/moved the 2 clips (${st})`);
+    m = await mockState();
+    const oct = m.files.find((f) => f.mimeType === 'application/vnd.google-apps.folder' && f.name === '2026-10');
+    const clipsNow = m.files.filter((f) => f.mimeType === 'audio/wav');
+    assert(oct && clipsNow.length === 2 && clipsNow.every((f) => f.parents.length === 1 && f.parents[0] === oct.id && /^2026-10-01_00-00-(05|25)_טלפון_[0-9a-f]{6}\.wav$/.test(f.name)), `drive: clips renamed and moved to 2026/2026-10 (${clipsNow.map((f) => f.name + '@' + f.parents.join(',')).join(', ')})`);
+    const sep = JSON.parse(m.files.find((f) => f.name === 'events-2026-09.json').text).events, octIdx = JSON.parse(m.files.find((f) => f.name === 'events-2026-10.json').text).events;
+    assert(sep.length === 0 && octIdx.length === 2 && octIdx.every((x) => x.timeCorrected && x.originalNoiseTs && /2026-10-01/.test(x.fileName)), `drive: index moved to October (${sep.length}/${octIdx.length})`);
+    assert(JSON.parse(m.files.find((f) => f.name === 'scan-log.json').text).scans[0].startTs === Date.UTC(2026, 8, 30, 21, 0, 0), 'drive: scan-log entry carries the corrected start');
+  }
+
   // ---- מכשיר B: "מחשב" רואה ומנגן את הקליפים של A ----
   const B = await newDevice('מחשב');
   await connect(B);
@@ -92,6 +113,7 @@ const mockState = async () => (await fetch(`http://127.0.0.1:${MOCK}/__state`)).
   assert(/הועלו 0, התקבלו 2/.test(st), `B: sync received 2 remote events (${st})`);
   ev = await localEvents(B);
   assert(ev.length === 2 && ev.every((e) => e.remote && e.device === 'טלפון' && !e.hasBlob), 'B: 2 remote events from טלפון without local audio');
+  assert(ev.every((e) => /2026-10-01/.test(e.fileName) && new Date(e.noiseTs).getUTCMonth() === 8 && new Date(e.noiseTs).getUTCDate() === 30), 'B: remote events carry the corrected October times and names');
   assert(await B.page.$$eval('#events .tag.cloud', (els) => els.map((e) => e.textContent)).then((t) => t.every((x) => /מ-Drive · טלפון/.test(x))), 'B: cards show "from Drive · טלפון"');
   await B.page.click('#events li.event:first-child button[data-act="play"]');
   await B.page.waitForSelector('#events li.event:first-child .player audio', { timeout: 20000 });
@@ -107,9 +129,9 @@ const mockState = async () => (await fetch(`http://127.0.0.1:${MOCK}/__state`)).
   assert(/הועלו 3, התקבלו 0/.test(st), `B: sync uploaded 3 (${st})`);
   m = await mockState();
   assert(m.files.filter((f) => f.mimeType === 'audio/wav').length === 5, 'drive: 5 clips after both devices');
-  assert(JSON.parse(m.files.find((f) => f.name === 'events-2026-09.json').text).events.length === 5, 'drive: index merged to 5 entries');
+  assert(JSON.parse(m.files.find((f) => f.name === 'events-2026-09.json').text).events.length === 3 && JSON.parse(m.files.find((f) => f.name === 'events-2026-10.json').text).events.length === 2, 'drive: indexes hold 3 (Sep, מחשב) + 2 (Oct, טלפון) entries');
   assert(JSON.parse(m.files.find((f) => f.name === 'scan-log.json').text).scans.length === 2, 'drive: scan-log has both scans');
-  assert(m.files.filter((f) => f.name === 'events-2026-09.json').length === 1 && m.files.filter((f) => f.name === 'events-2026-09.csv').length === 1 && m.files.filter((f) => f.name === 'scan-log.json').length === 1, 'drive: index/csv/scan-log updated in place, not duplicated');
+  assert(['events-2026-09.json', 'events-2026-10.json', 'events-2026-09.csv', 'events-2026-10.csv', 'scan-log.json'].every((n) => m.files.filter((f) => f.name === n).length === 1), 'drive: index/csv/scan-log updated in place, not duplicated');
 
   // ---- A מקבל את האירועים של B, מוחק אחד משלו גם מ-Drive ----
   st = await sync(A);
@@ -126,7 +148,7 @@ const mockState = async () => (await fetch(`http://127.0.0.1:${MOCK}/__state`)).
   st = await sync(A);
   assert(/נמחקו מ-Drive 1/.test(st), `A: sync deleted the clip from Drive (${st})`);
   m = await mockState();
-  assert(m.files.filter((f) => f.mimeType === 'audio/wav').length === 4 && !JSON.parse(m.files.find((f) => f.name === 'events-2026-09.json').text).events.some((x) => x.uid === ownFirst.uid), 'drive: clip removed and index updated');
+  assert(m.files.filter((f) => f.mimeType === 'audio/wav').length === 4 && !JSON.parse(m.files.find((f) => f.name === 'events-2026-10.json').text).events.some((x) => x.uid === ownFirst.uid), 'drive: clip removed and index updated');
   st = await sync(A);
   assert(/הועלו 0, התקבלו 0/.test(st) && (await localEvents(A)).length === 4, 'A: deleted event does not come back on the next sync');
 
