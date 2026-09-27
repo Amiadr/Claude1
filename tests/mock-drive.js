@@ -79,6 +79,15 @@ function startMockDrive(port) {
       if (req.method === 'GET' && u.searchParams.get('alt') === 'media') { res.writeHead(200, Object.assign({ 'Content-Type': f.mimeType }, cors)); return res.end(f.content); }
       if (req.method === 'GET') return send(200, meta(f));
       if (req.method === 'DELETE') { files.delete(f.id); res.writeHead(204, cors); return res.end(); }
+      if (req.method === 'PATCH') {
+        const j = JSON.parse(body.toString() || '{}');
+        if (j.name) f.name = j.name; if (j.appProperties) f.appProperties = Object.assign({}, f.appProperties, j.appProperties); if (j.description !== undefined) f.description = j.description;
+        const add = u.searchParams.get('addParents'), rm = u.searchParams.get('removeParents');
+        if (rm) f.parents = (f.parents || []).filter((p) => p !== rm);
+        if (add) f.parents = (f.parents || []).concat([add]);
+        f.modifiedTime = new Date().toISOString();
+        return send(200, meta(f));
+      }
     }
     send(404, { error: { message: 'mock: unhandled ' + req.method + ' ' + u.pathname } });
   });

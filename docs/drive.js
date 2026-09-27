@@ -109,9 +109,16 @@
     if (!put.ok) throw new Error(`Drive: ההעלאה נכשלה (${put.status})`);
     return put.json();
   }
+  async function patchMeta(fileId, meta, query) {
+    const res = await api(`/drive/v3/files/${fileId}?fields=id,name,parents${query ? '&' + query : ''}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(meta || {}) });
+    return res.json();
+  }
+  async function move(fileId, addParent, removeParent, name) {
+    return patchMeta(fileId, name ? { name } : {}, `addParents=${enc(addParent)}${removeParent ? '&removeParents=' + enc(removeParent) : ''}`);
+  }
   async function download(fileId) { const res = await api(`/drive/v3/files/${fileId}?alt=media`); return res.blob(); }
   async function getJson(fileId) { const res = await api(`/drive/v3/files/${fileId}?alt=media`); return res.json(); }
   async function del(fileId) { try { await api(`/drive/v3/files/${fileId}`, { method: 'DELETE' }, 1); } catch (e) { if (!/Drive 404/.test(e.message)) throw e; } }
 
-  root.DriveClient = { configure, state, isConnected, restore, signIn, signOut, getEmail, api, list, getMeta, ensureFolder, upload, download, getJson, del, esc };
+  root.DriveClient = { configure, state, isConnected, restore, signIn, signOut, getEmail, api, list, getMeta, ensureFolder, upload, patchMeta, move, download, getJson, del, esc };
 })(typeof self !== 'undefined' ? self : globalThis);
