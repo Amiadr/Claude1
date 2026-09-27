@@ -714,6 +714,8 @@
     if (imp.levels) { imp.startMs = currentStartMs(); drawTimeline(); if (imp.review) renderReview(); }
   }
   function setImpProgress(f, text) { $('#impProgress').hidden = false; $('#impBar').style.width = `${Math.round(f * 100)}%`; $('#impProgText').textContent = `${text} ${Math.round(f * 100)}%`; }
+  // בר ההתקדמות מוצג מתחת לכפתור שהפעיל את הפעולה (סריקה / האזנה ובחירה / שמירה)
+  function moveProgressAfter(btnId) { const row = $('#' + btnId).closest('.row'); const bar = $('#impProgress'); if (row && bar && row.nextElementSibling !== bar) row.insertAdjacentElement('afterend', bar); }
 
   async function runImportScan() {
     if (!imp || !imp.file) return;
@@ -726,7 +728,7 @@
       imp.coverageChecked = true;
     }
     $('#impError').hidden = true; $('#impResult').hidden = true; $('#impReview').hidden = true; $('#impSaved').textContent = '';
-    $('#impScanBtn').disabled = true; $('#impCancelBtn').hidden = false; setImpProgress(0, 'מתחיל…');
+    $('#impScanBtn').disabled = true; $('#impCancelBtn').hidden = false; moveProgressAfter('impScanBtn'); setImpProgress(0, 'מתחיל…');
     log('ייבוא', `סורק את ${imp.file.name} (${fmtBytes(imp.file.size)})${startMs !== null ? `, תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)}` : ''}`);
     try {
       if (imp.fullDecode) {
@@ -833,7 +835,7 @@
   async function analyzeImport() {
     if (!imp || !imp.detected || !imp.detected.length) return;
     const list = imp.detected;
-    $('#impReviewBtn').disabled = true; setImpProgress(0, 'מנתח אירועים…');
+    $('#impReviewBtn').disabled = true; moveProgressAfter('impReviewBtn'); setImpProgress(0, 'מנתח אירועים…');
     let results;
     try {
       if (imp.client) {
@@ -917,7 +919,7 @@
     if (!imp.coverageChecked) { if (!(await checkCoverage(startMs, startMs + imp.durationSec * 1000, imp.file))) return; imp.coverageChecked = true; }
     const dev = deviceInfo();
     const importId = Date.now(); let saved = 0;
-    $('#impSaveBtn').disabled = true; setImpProgress(0, 'שומר קליפים…');
+    $('#impSaveBtn').disabled = true; moveProgressAfter('impSaveBtn'); setImpProgress(0, 'שומר קליפים…');
     const saveOne = async (e, samples, sampleRate) => {
       const rec = {
         startTs: Math.round(startMs + e.startSec * 1000), noiseTs: Math.round(startMs + e.noiseSec * 1000), endTs: Math.round(startMs + e.endSec * 1000),
