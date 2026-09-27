@@ -62,6 +62,9 @@
   function fmtTime(ts) { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
   function fmtTimeMs(ts) { const d = new Date(ts); return `${fmtTime(ts)}.${pad(d.getMilliseconds(), 3)}`; }
   function fmtStamp(ts) { const d = new Date(ts); return `${fmtDateIso(ts)}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`; }
+  function fmtHms(sec) { sec = Math.round(sec || 0); return `${pad(Math.floor(sec / 3600))}:${pad(Math.floor((sec % 3600) / 60))}:${pad(sec % 60)}`; }
+  function fmtBytes(b) { return b >= 1048576 ? (b / 1048576).toFixed(b >= 104857600 ? 0 : 1) + ' MB' : Math.round(b / 1024) + ' KB'; }
+  function toLocalInput(ms) { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
   function fmtDur(sec) { return sec >= 60 ? `${Math.floor(sec / 60)}:${pad(Math.round(sec % 60))} דק׳` : `${sec.toFixed(1)} שנ׳`; }
   // "לילה" = מ-12:00 בצהריים עד 12:00 למחרת, כדי שאירועים אחרי חצות ישויכו לאותו לילה
   function nightKey(ts) { return fmtDateIso(ts - 12 * 3600 * 1000); }
@@ -198,10 +201,11 @@
   // ---------- CSV ----------
   function csvCell(v) { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
   function eventsCsv(list) {
-    const head = ['#', 'תאריך', 'שעת תחילת הרעש', 'תחילת הקליפ', 'סיום הקליפ', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'קליפ קטוע', 'הערה', 'קובץ'];
+    const head = ['#', 'תאריך', 'שעת תחילת הרעש', 'תחילת הקליפ', 'סיום הקליפ', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'קליפ קטוע', 'הערה', 'קובץ', 'מקור', 'היסט בהקלטה המקורית'];
     const rows = list.slice().sort((a, b) => a.noiseTs - b.noiseTs).map((e) => [
       e.id, fmtDate(e.noiseTs), fmtTimeMs(e.noiseTs), fmtTime(e.startTs), fmtTime(e.endTs),
-      e.durationSec.toFixed(1), disp(e.peakDb).toFixed(1), disp(e.avgDb).toFixed(1), e.truncated ? 'כן' : '', e.note || '', fileName(e)]);
+      e.durationSec.toFixed(1), disp(e.peakDb).toFixed(1), disp(e.avgDb).toFixed(1), e.truncated ? 'כן' : '', e.note || '', fileName(e),
+      e.source === 'file' ? e.sourceName : 'מיקרופון', e.source === 'file' ? fmtHms(e.offsetSec) : '']);
     return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
   function logCsv(list) {
@@ -428,6 +432,7 @@
             <span title="רמת שיא (סולם יחסי)">שיא <b>${disp(e.peakDb).toFixed(0)}</b></span>
             <span title="אורך הקליפ כולל השניות שלפני ואחרי">${fmtDur(e.durationSec)}</span>
             ${e.truncated ? '<span class="tag">קטוע</span>' : ''}
+            ${e.source === 'file' ? `<span class="tag file" title="${escapeHtml(e.sourceName || '')} @ ${fmtHms(e.offsetSec)}">מקובץ</span>` : ''}
           </div>
         </div>
         <div class="ev-actions">
@@ -538,9 +543,212 @@
     setTimeout(tickNightClock, 5000);
   }
 
+  // ---------- ייבוא הקלטה קיימת ----------
+  let imp = null;
+  function impError(msg) {
+    const el = $('#impError'); el.textContent = msg; el.hidden = false;
+    $('#impProgress').hidden = true; $('#impScanBtn').disabled = false; $('#impCancelBtn').hidden = true;
+    log('שגיאה', 'ייבוא: ' + msg);
+  }
+  function resetImport() {
+    if (imp && imp.worker) imp.worker.terminate();
+    imp = null;
+    for (const id of ['impInfo', 'impResult', 'impError', 'impProgress', 'impNote']) $('#' + id).hidden = true;
+    $('#impScanBtn').disabled = false; $('#impCancelBtn').hidden = true; $('#impSaved').textContent = '';
+  }
+  async function onFileChosen(file) {
+    resetImport();
+    if (!file) return;
+    if (!window.NoiseScan) { impError('רכיב הסריקה (scan.js) לא נטען'); return; }
+    imp = { file };
+    $('#impName').textContent = file.name; $('#impFormat').textContent = 'בודק את הקובץ…'; $('#impDuration').textContent = '';
+    $('#impInfo').hidden = false; $('#impScanBtn').disabled = true;
+    let scanner;
+    try { scanner = await NoiseScan.open(file); } catch (e) { impError(e.message); return; }
+    imp.scanner = scanner; imp.info = scanner.info;
+    const info = imp.info;
+    if (!info.supported) {
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      const canFullDecode = OAC && (info.needsFullDecode || info.format === 'mp4' || info.format === 'mp3');
+      if (!canFullDecode) { impError(info.reason || 'פורמט לא נתמך'); return; }
+      imp.fullDecode = true;
+      $('#impNote').textContent = (info.reason ? info.reason + '. ' : '') + 'הקובץ יפוענח כולו בזיכרון; מתאים להקלטות של עד כשעה.';
+      $('#impNote').hidden = false;
+    }
+    $('#impFormat').textContent = [String(info.format || '').toUpperCase(), info.codec, info.sampleRate ? info.sampleRate + ' Hz' : '', fmtBytes(file.size)].filter(Boolean).join(' · ');
+    $('#impDuration').textContent = info.durationSec ? (info.durationEstimated ? '~' : '') + fmtHms(info.durationSec) : 'לא ידוע';
+    renderStartCandidates();
+    $('#impScanBtn').disabled = false;
+  }
+  function renderStartCandidates() {
+    const cands = NoiseScan.startCandidates(imp.file, imp.info || {});
+    imp.candidates = cands;
+    const box = $('#impCandidates'); box.innerHTML = '';
+    if (imp.startManual) { /* המשתמש כבר בחר זמן – לא דורסים */ }
+    else if (cands.length) { $('#impStart').value = toLocalInput(cands[0].time); $('#impStartSrc').textContent = 'מקור: ' + cands[0].source; }
+    else { $('#impStart').value = ''; $('#impStartSrc').textContent = 'לא נמצא זמן בקובץ, הזן ידנית'; }
+    for (const c of cands) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'chip';
+      b.innerHTML = `<span class="ltr">${fmtDate(c.time)} ${fmtTime(c.time)}</span> · ${escapeHtml(c.source)}`;
+      b.addEventListener('click', () => { imp.startManual = true; $('#impStart').value = toLocalInput(c.time); $('#impStartSrc').textContent = 'מקור: ' + c.source; if (imp && imp.levels) { imp.startMs = c.time; drawTimeline(); } });
+      box.appendChild(b);
+    }
+  }
+  function currentStartMs() { const v = $('#impStart').value; if (!v) return null; const d = new Date(v); return isNaN(d) ? null : d.getTime(); }
+  function setImpProgress(f, text) { $('#impBar').style.width = `${Math.round(f * 100)}%`; $('#impProgText').textContent = `${text} ${Math.round(f * 100)}%`; }
+
+  async function runImportScan() {
+    if (!imp || !imp.file) return;
+    const startMs = currentStartMs();
+    if (startMs === null) { alert('הזן את זמן תחילת ההקלטה.'); return; }
+    imp.startMs = startMs; imp.levels = null;
+    $('#impError').hidden = true; $('#impResult').hidden = true; $('#impSaved').textContent = '';
+    $('#impScanBtn').disabled = true; $('#impCancelBtn').hidden = false; $('#impProgress').hidden = false; setImpProgress(0, 'מתחיל…');
+    log('ייבוא', `סורק את ${imp.file.name} (${fmtBytes(imp.file.size)}), תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)}`);
+    try {
+      if (imp.fullDecode) {
+        if (imp.file.size > 200 * 1048576) throw new Error('הקובץ גדול מדי לפענוח מלא בדפדפן (מעל 200MB). המר ל-WAV/MP3/M4A או השתמש בכלי הפייתוני');
+        setImpProgress(0, 'מפענח את כל הקובץ…');
+        const buf = await imp.file.arrayBuffer();
+        const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+        let octx; try { octx = new OAC(1, 1, 16000); } catch (e) { octx = new OAC(1, 1, 44100); }
+        let audio;
+        try { audio = await octx.decodeAudioData(buf); }
+        catch (e) { throw new Error(`הדפדפן לא הצליח לפענח את הקובץ (${e && e.message ? e.message : e}). ${imp.info.reason ? imp.info.reason + '. ' : ''}נסה ב-Chrome/Edge עדכני, המר את הקובץ ל-WAV/MP3, או השתמש בכלי הפייתוני (tools/noise_events.py)`); }
+        imp.scanner = new NoiseScan.DecodedScanner(imp.file, audio);
+        const r = await imp.scanner.scanLevels((f) => setImpProgress(f, 'מודד רמות…'));
+        if (!r) throw new Error('הסריקה בוטלה');
+        if (!imp.info.durationSec) { imp.info.durationSec = r.durationSec; renderStartCandidates(); imp.startMs = currentStartMs() ?? startMs; }
+        onLevels(r);
+      } else if (window.Worker) {
+        const w = new Worker('scan-worker.js'); imp.worker = w;
+        await new Promise((resolve, reject) => {
+          w.onerror = (e) => reject(new Error(e.message || 'שגיאה ברכיב הסריקה'));
+          w.onmessage = (e) => {
+            const m = e.data;
+            if (m.type === 'opened') w.postMessage({ type: 'scan' });
+            else if (m.type === 'progress') setImpProgress(m.fraction, 'מפענח…');
+            else if (m.type === 'levels') { onLevels(m); resolve(); }
+            else if (m.type === 'cancelled') reject(new Error('הסריקה בוטלה'));
+            else if (m.type === 'error') reject(new Error(m.message));
+          };
+          w.postMessage({ type: 'open', file: imp.file });
+        });
+      } else {
+        const r = await imp.scanner.scanLevels((f) => setImpProgress(f, 'מפענח…'));
+        if (!r) throw new Error('הסריקה בוטלה');
+        onLevels(r);
+      }
+    } catch (e) {
+      impError(e.message);
+      if (imp && imp.worker) { imp.worker.terminate(); imp.worker = null; }
+      return;
+    }
+    $('#impProgress').hidden = true; $('#impCancelBtn').hidden = true; $('#impScanBtn').disabled = false;
+  }
+  function cancelImportScan() {
+    if (!imp) return;
+    if (imp.worker) imp.worker.postMessage({ type: 'cancel' });
+    if (imp.scanner && imp.scanner.cancel) imp.scanner.cancel();
+  }
+  function onLevels(r) {
+    imp.levels = r.levels; imp.sampleRate = r.sampleRate; imp.durationSec = r.durationSec; imp.floorDb = r.floorDb;
+    if (r.info) imp.info = Object.assign(imp.info || {}, r.info);
+    $('#impDuration').textContent = fmtHms(r.durationSec);
+    const thr = Math.min(99, Math.max(1, Math.round(disp(r.floorDb) + 12)));
+    $('#impThr').value = thr; $('#impFloor').textContent = disp(r.floorDb).toFixed(0);
+    $('#impResult').hidden = false;
+    recountImport();
+    log('ייבוא', `הסריקה הסתיימה: אורך ${fmtHms(r.durationSec)}, רמת רקע ${disp(r.floorDb).toFixed(0)}, סף מוצע ${thr}`);
+  }
+  function recountImport() {
+    if (!imp || !imp.levels) return;
+    const thr = Number($('#impThr').value); $('#impThrVal').textContent = thr;
+    imp.threshold = thr - 100;
+    imp.detected = NoiseScan.detectFromLevels(imp.levels, { threshold: imp.threshold, pre: settings.pre, tail: settings.tail, maxClip: settings.maxClip });
+    const n = imp.detected.length; const totalSec = imp.detected.reduce((a, e) => a + (e.endSec - e.startSec), 0);
+    $('#impCount').textContent = n ? `${n} אירועים, סה"כ ${fmtDur(totalSec)} של קליפים (כ-${fmtBytes(totalSec * imp.sampleRate * 2)})` : 'לא נמצאו אירועים מעל הסף. הנמך את הסף.';
+    $('#impSaveCount').textContent = n; $('#impSaveBtn').disabled = !n;
+    drawTimeline();
+  }
+  function drawTimeline() {
+    const cv = $('#impTimeline'); if (!imp || !imp.levels) return;
+    const dpr = window.devicePixelRatio || 1; const W = Math.max(200, cv.clientWidth || 600), H = 96;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.fillStyle = '#0b1220'; g.fillRect(0, 0, W, H);
+    const lv = imp.levels, n = lv.length, plotH = H - 22, thr = imp.threshold;
+    // הסולם מתחיל קצת מתחת לרמת הרקע, כדי שדפיקות יבלטו
+    const lo = Math.max(0, disp(imp.floorDb) - 12), scale = (v) => Math.min(1, Math.max(0, (disp(v) - lo) / (100 - lo)));
+    for (let x = 0; x < W; x++) {
+      const a = Math.floor((x * n) / W), b = Math.max(a + 1, Math.floor(((x + 1) * n) / W));
+      let mx = -100; for (let i = a; i < b && i < n; i++) if (lv[i] > mx) mx = lv[i];
+      const v = scale(mx);
+      g.fillStyle = mx >= thr ? '#f59e0b' : '#38bdf8'; g.fillRect(x, plotH - v * plotH, 1, v * plotH);
+    }
+    const ty = plotH - scale(thr) * plotH;
+    g.strokeStyle = '#ffffff'; g.lineWidth = 1; g.beginPath(); g.moveTo(0, ty + 0.5); g.lineTo(W, ty + 0.5); g.stroke();
+    g.fillStyle = '#ef4444';
+    for (const e of imp.detected || []) { const x0 = (e.startSec / imp.durationSec) * W, x1 = Math.max(x0 + 2, (e.endSec / imp.durationSec) * W); g.fillRect(x0, plotH + 3, x1 - x0, 5); }
+    g.fillStyle = '#94a3b8'; g.font = '11px system-ui, sans-serif'; g.textAlign = 'center';
+    for (let k = 0; k <= 4; k++) {
+      const t = (imp.durationSec * k) / 4; const label = imp.startMs ? fmtTime(imp.startMs + t * 1000).slice(0, 5) : fmtHms(t);
+      g.fillText(label, Math.min(W - 18, Math.max(18, (W * k) / 4)), H - 3);
+    }
+  }
+  async function saveImport() {
+    if (!imp || !imp.detected || !imp.detected.length) return;
+    const dup = events.filter((e) => e.sourceName === imp.file.name).length;
+    if (dup && !confirm(`כבר יש ${dup} אירועים מהקובץ "${imp.file.name}". לייבא שוב (ייווצרו כפילויות)?`)) return;
+    const startMs = currentStartMs() ?? imp.startMs; imp.startMs = startMs;
+    const list = imp.detected, importId = Date.now(); let saved = 0;
+    $('#impSaveBtn').disabled = true; $('#impProgress').hidden = false; setImpProgress(0, 'שומר קליפים…');
+    const saveOne = async (e, samples, sampleRate) => {
+      const rec = {
+        startTs: Math.round(startMs + e.startSec * 1000), noiseTs: Math.round(startMs + e.noiseSec * 1000), endTs: Math.round(startMs + e.endSec * 1000),
+        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '',
+        sessionId: importId, source: 'file', sourceName: imp.file.name, offsetSec: e.noiseSec, blob: encodeWav(samples, sampleRate),
+      };
+      rec.id = await dbAdd('events', rec); events.push(rec); saved++;
+      setImpProgress(saved / list.length, `שומר קליפים… ${saved}/${list.length}`);
+    };
+    try {
+      if (imp.worker) {
+        await new Promise((resolve, reject) => {
+          const w = imp.worker; let chain = Promise.resolve();
+          w.onmessage = (ev) => {
+            const m = ev.data;
+            if (m.type === 'clip') chain = chain.then(() => saveOne(list[m.id], m.samples, m.sampleRate)).catch(reject);
+            else if (m.type === 'extracted') chain.then(resolve, reject);
+            else if (m.type === 'error') reject(new Error(m.message));
+          };
+          w.postMessage({ type: 'extract', ranges: list.map((e, i) => ({ id: i, t0: e.startSec, t1: e.endSec })) });
+        });
+      } else {
+        for (const e of list) { const samples = await imp.scanner.extract(e.startSec, e.endSec); await saveOne(e, samples, imp.scanner.outRate || imp.sampleRate); }
+      }
+    } catch (e) {
+      impError('השמירה נכשלה אחרי ' + saved + ' אירועים: ' + e.message); renderEvents(); refreshStorage(); return;
+    }
+    log('ייבוא', `נשמרו ${saved} אירועים מהקובץ ${imp.file.name}. תחילת ההקלטה ${fmtDate(startMs)} ${fmtTime(startMs)} (${$('#impStartSrc').textContent.replace('מקור: ', '')}), סף ${imp.threshold + 100}`);
+    $('#impProgress').hidden = true; $('#impSaveBtn').disabled = false;
+    $('#impSaved').textContent = `נשמרו ${saved} אירועים. הם מופיעים ברשימת האירועים למטה, מסומנים "מקובץ".`;
+    renderEvents(); refreshStorage();
+  }
+  function bindImportUi() {
+    $('#fileInput').addEventListener('change', () => onFileChosen($('#fileInput').files[0]));
+    $('#impScanBtn').addEventListener('click', runImportScan);
+    $('#impCancelBtn').addEventListener('click', cancelImportScan);
+    $('#impThr').addEventListener('input', recountImport);
+    $('#impSaveBtn').addEventListener('click', saveImport);
+    $('#impStart').addEventListener('change', () => { if (imp) imp.startManual = true; $('#impStartSrc').textContent = 'מקור: הוזן ידנית'; if (imp && imp.levels) { imp.startMs = currentStartMs(); drawTimeline(); } });
+    window.addEventListener('resize', () => { if (imp && imp.levels) drawTimeline(); });
+  }
+
   // ---------- חיבור UI ----------
   function bindUi() {
     syncSettingsUi();
+    bindImportUi();
     $('#startBtn').addEventListener('click', startMonitoring);
     $('#stopBtn').addEventListener('click', () => stopMonitoring(false));
     $('#nightBtn').addEventListener('click', showNight);
@@ -548,7 +756,7 @@
     $('#calibrateBtn').addEventListener('click', autoCalibrate);
     $('#threshold').addEventListener('input', () => { settings.threshold = Number($('#threshold').value); $('#thresholdVal').textContent = settings.threshold; $('#meterThr').style.right = `${100 - settings.threshold}%`; saveSettings(); });
     for (const k of ['pre', 'tail', 'maxClip']) {
-      $('#' + k).addEventListener('change', () => { const v = Number($('#' + k).value); if (Number.isFinite(v) && v >= 0) { settings[k] = v; saveSettings(); } });
+      $('#' + k).addEventListener('change', () => { const v = Number($('#' + k).value); if (Number.isFinite(v) && v >= 0) { settings[k] = v; saveSettings(); if (imp && imp.levels) recountImport(); } });
     }
     $('#sampleRate').addEventListener('change', () => { settings.sampleRate = Number($('#sampleRate').value); saveSettings(); if (monitoring) log('מידע', 'קצב הדגימה ישתנה בניטור הבא'); });
     $('#keepAwake').addEventListener('change', () => { settings.keepAwake = $('#keepAwake').checked; saveSettings(); if (settings.keepAwake && monitoring) acquireWakeLock(); else if (wakeLock) { wakeLock.release(); } });
@@ -585,7 +793,7 @@
   }
 
   // חשיפה לבדיקות אוטומטיות
-  window.__noiseLog = { get events() { return events; }, get monitoring() { return monitoring; }, settings, eventsCsv, makeZip, dbGetAll, Detector, disp };
+  window.__noiseLog = { get events() { return events; }, get monitoring() { return monitoring; }, get importState() { return imp; }, settings, eventsCsv, makeZip, dbGetAll, Detector, disp };
 
   init();
 })();

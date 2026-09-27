@@ -3,28 +3,17 @@
 // הרצה: node tests/web-test.js /path/to/test.wav /path/to/outdir
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
 const { chromium } = require('/opt/node22/lib/node_modules/playwright');
 
 const [,, wavPath, outDir] = process.argv;
 if (!wavPath || !outDir) { console.error('usage: web-test.js test.wav outdir'); process.exit(2); }
 fs.mkdirSync(outDir, { recursive: true });
-const DOCS = path.resolve(__dirname, '..', 'docs');
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
-
-const server = http.createServer((req, res) => {
-  let p = decodeURIComponent(req.url.split('?')[0]);
-  if (p === '/') p = '/index.html';
-  const file = path.join(DOCS, p);
-  if (!file.startsWith(DOCS) || !fs.existsSync(file)) { res.writeHead(404); return res.end(); }
-  res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' });
-  fs.createReadStream(file).pipe(res);
-});
+const { startServer } = require('./serve');
 
 function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else { console.log('ok  :', msg); } }
 
 (async () => {
-  await new Promise((r) => server.listen(8765, '127.0.0.1', r));
+  const server = await startServer(8765);
   const browser = await chromium.launch({
     args: [
       '--use-fake-device-for-media-stream',

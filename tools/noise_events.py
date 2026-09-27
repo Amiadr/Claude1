@@ -102,9 +102,13 @@ class AudioSource:
                     raw = raw[:-1]
                 yield np.frombuffer(raw, dtype="<i2")
         finally:
+            # אם הקריאה הופסקה באמצע (למשל אחרי שכל הקליפים נכתבו) – לסגור את ffmpeg, אחרת הוא ייתקע על צינור מלא
+            if proc.poll() is None:
+                proc.kill()
+            proc.stdout.close()
             err = proc.stderr.read().decode("utf-8", "replace").strip() if proc.stderr else ""
             proc.wait()
-            if proc.returncode not in (0, None) and err:
+            if proc.returncode not in (0, None, -9) and err:
                 print(f"ffmpeg: {err}", file=sys.stderr)
 
 
@@ -156,17 +160,19 @@ def detect(levels: np.ndarray, frame_len: int, total: int, rate: int, threshold:
         if not loud[i]:
             i += 1
             continue
-        # דרישת מינימום פריימים רועפים רצופים (לסינון קליקים חשמליים)
+        # דרישת מינימום פריימים רועשים רצופים (לסינון קליקים חשמליים)
         j = i
-        while j < n and loud[j]:
+        while j < n and loud[j] and j - i < min_frames:
             j += 1
         if j - i < min_frames:
+            while j < n and loud[j]:
+                j += 1
             i = j
             continue
         noise_f = i
         start_f = max(prev_end_f, noise_f - pre_f)
-        last_loud = j - 1
-        k = j
+        last_loud = i
+        k = i + 1
         truncated = False
         while True:
             if k >= n:
@@ -259,7 +265,7 @@ def start_from_filename(path: str) -> dt.datetime | None:
 
 
 def hms(seconds: float) -> str:
-    seconds = int(round(seconds))
+    seconds = int(seconds)
     return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
 
 

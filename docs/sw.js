@@ -1,7 +1,7 @@
 // Service worker: מאפשר התקנה כאפליקציה ועבודה גם בלי רשת.
 // אסטרטגיה: רשת קודם, ואם אין רשת – מהמטמון.
-const CACHE = 'noise-log-v1';
-const ASSETS = ['./', './index.html', './app.js', './noise-worklet.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png'];
+const CACHE = 'noise-log-v2';
+const ASSETS = ['./', './index.html', './app.js', './scan.js', './scan-worker.js', './noise-worklet.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
