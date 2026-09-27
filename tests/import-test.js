@@ -49,6 +49,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     const errR = await page.$eval('#impError', (el) => (el.hidden ? null : el.textContent));
     if (errR) return { error: errR, info };
     info.review = await page.evaluate(() => window.__noiseLog.importState.review.map((r) => ({ kind: r.kind, selected: r.selected, noiseSec: r.noiseSec, cls: r.cls })));
+    info.progressAfterReview = await page.evaluate(() => document.querySelector('#impReviewBtn').closest('.row').nextElementSibling.id === 'impProgress');
     info.rows = await page.$$eval('#impReviewList li.rev', (els) => els.length);
     if (opts.play !== false) {
       await page.click('#impReviewList li.rev:first-child button[data-act="play"]');
@@ -65,6 +66,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     const err3 = await page.$eval('#impError', (el) => (el.hidden ? null : el.textContent));
     if (err3) return { error: err3, info };
     info.saved = await page.evaluate((n) => window.__noiseLog.events.slice(n).map((e) => ({ id: e.id, noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, sampleRate: e.sampleRate, source: e.source, sourceName: e.sourceName, offsetSec: e.offsetSec, kind: e.kind, size: e.blob.size, peak: window.__noiseLog.disp(e.peakDb) })), before);
+    info.progressAfterSave = await page.evaluate(() => document.querySelector('#impSaveBtn').closest('.row').nextElementSibling.id === 'impProgress');
     return info;
   }
   function checkSaved(label, r, startMs, tol, expected /* offsets in seconds */, expectedKinds) {
@@ -89,6 +91,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
   assert(near(r.thr, 52, 2), `wav: suggested threshold ≈ floor+12 (${r.thr}, floor ${r.floor})`);
   assert(r.selected === 2 && /2 מסומנים/.test(r.summary), `wav: 2 of 3 selected after unchecking the drag (${r.summary})`);
   checkSaved('wav', r, localMs(2026, 9, 26, 23, 0, 0), 0.06, [5, 25], ['bang', 'noise', 'bang']);
+  assert(r.progressAfterReview && r.progressAfterSave, 'ui: progress bar sits under the button that started the step (review, save)');
   await page.screenshot({ path: path.join(outDir, 'shot-import.png'), fullPage: true });
 
   // ---- WAV עם קטע דמוי דיבור: הסיווג מסמן אותו, הכפתור מבטל את בחירתו ----
