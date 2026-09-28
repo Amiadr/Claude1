@@ -276,7 +276,7 @@ def main(argv=None):
     ap.add_argument("--start", help='זמן תחילת ההקלטה, למשל "2026-09-26 23:10". אם חסר: מנסה לקרוא משם הקובץ, ואחרת מזמן השינוי של הקובץ (סוף ההקלטה) פחות אורכה.')
     ap.add_argument("--out", help="תיקיית פלט (ברירת מחדל: <שם הקובץ>_events)")
     ap.add_argument("--threshold", type=float, help="סף ב-dBFS (למשל -40). ברירת מחדל: אוטומטי = רמת רקע + --margin")
-    ap.add_argument("--margin", type=float, default=12.0, help="בסף אוטומטי: כמה dB מעל רמת הרקע (ברירת מחדל 12)")
+    ap.add_argument("--margin", type=float, default=8.0, help="בסף אוטומטי: כמה dB מעל רמת הרקע (ברירת מחדל 8; דפיקות שקטות דרך הקיר הן לעיתים רק 8–13 dB מעל הרקע)")
     ap.add_argument("--pre", type=float, default=3.0, help="שניות לפני הרעש שנכללות בקליפ")
     ap.add_argument("--tail", type=float, default=3.0, help="שניות שקט שסוגרות אירוע")
     ap.add_argument("--max-clip", type=float, default=120.0, help="אורך קליפ מרבי בשניות")

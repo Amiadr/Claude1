@@ -94,7 +94,7 @@ function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.e
   assert(lfTest.low.length === 1 && Math.abs(lfTest.low[0] - 8000) < 150, `detector low band: thump only (${lfTest.low.join(',')})`);
   if (speechMode) {
     const logText0 = await page.$eval('#log', (el) => el.innerText);
-    assert(/1 אירועים שנשמעו כדיבור לא נשמרו/.test(logText0), 'speech filter: session log reports the count only');
+    assert(/1 אירועים סוננו \(דיבור\/נשימות\) ולא נשמרו/.test(logText0), 'speech filter: session log reports the count only');
   }
   await page.screenshot({ path: path.join(outDir, 'shot-events.png'), fullPage: true });
 

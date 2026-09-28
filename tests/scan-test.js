@@ -145,6 +145,27 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     assert(cbd.kind === 'bangdrag' && cbd.segments.map((g) => g.kind).join(',') === 'bang,drag', `classify: bang then drag → ${cbd.kind} [${cbd.segments.map((g) => g.kind + '@' + g.sec).join(', ')}]`);
     // גרירה לבד עדיין רעש רציף; דפיקה קצרה עדיין דפיקה (עם המסווג החדש)
     assert(NS.classify(drag, sr).kind === 'noise' && NS.classify(bang, sr).kind === 'bang', 'classify: drag → noise, short bang → bang (unchanged)');
+    // דפיקה שקטה דרך הקיר: רק 12 dB מעל רקע "חי" (לא לבן). בעבר כל הקליפ נחשב רועש והיא סווגה כרעש רציף
+    const quiet = mk(6); for (let i = 0; i < quiet.length; i++) quiet[i] = 0.004 * gauss();
+    for (let i = 0; i < 0.4 * sr; i++) { const t = i / sr; quiet[3 * sr + i] += 0.05 * (Math.sin(2 * Math.PI * 90 * t) + 0.5 * Math.sin(2 * Math.PI * 140 * t)) * Math.exp(-8 * t) * Math.min(1, t / 0.04); }
+    const cq = NS.classify(quiet, sr);
+    assert(cq.kind === 'bang' && cq.segments.length === 1, `classify: quiet knock 12 dB over background → ${cq.kind} (${JSON.stringify(cq.segments)})`);
+    // שלוש דפיקות שקטות ובליטות קצרות של רקע ביניהן: דפיקה, לא "דפיקה + גרירה"
+    const knocks = mk(8); for (let i = 0; i < knocks.length; i++) knocks[i] = 0.004 * gauss();
+    for (const at of [2, 3.1, 4.5]) for (let i = 0; i < 0.3 * sr; i++) { const t = i / sr; knocks[Math.round(at * sr) + i] += 0.06 * Math.sin(2 * Math.PI * 100 * t) * Math.exp(-10 * t) * Math.min(1, t / 0.03); }
+    for (const at of [2.6, 3.8, 5.2]) for (let i = 0; i < 0.05 * sr; i++) knocks[Math.round(at * sr) + i] += 0.006 * gauss(); // בליטות של 50ms, ~4 dB מעל הרקע
+    const ck = NS.classify(knocks, sr);
+    assert(ck.kind === 'bang' && ck.segments.filter((g) => g.kind === 'bang').length === 3, `classify: 3 quiet knocks + background blips → ${ck.kind} [${ck.segments.map((g) => g.kind + '@' + g.sec.toFixed(1)).join(', ')}]`);
+    // איחוד אירועים צמודים אחרי הסיווג
+    const ev = (startSec, endSec, kind, extra) => Object.assign({ startSec, noiseSec: startSec + 2, endSec, peakDb: -40, avgDb: -55, truncated: false, kind, selected: true, cls: { kind, segments: [{ kind: kind === 'noise' ? 'drag' : 'bang', sec: 2, dur: 0.3 }], loudSec: 0.3 } }, extra || {});
+    const rev = [ev(10, 16, 'bang', { peakDb: -30 }), ev(16, 20.5, 'bang'), ev(20.5, 24, 'noise'), ev(30, 36, 'noise'), ev(36, 40, 'breath'), ev(40, 44, 'noise'), ev(44, 48, 'noise', { rhythmic: true }), ev(48, 52, 'speech')];
+    const m = NS.mergeAdjacent(rev, { maxClip: 120 });
+    assert(m.length === 6 && m[0].startSec === 10 && m[0].endSec === 24 && m[0].kind === 'bangdrag' && m[0].merged === 3 && m[0].peakDb === -30 && m[0].noiseSec === 12, `merge: 3 contiguous events → one bangdrag 10–24 (got ${m.map((e) => `${e.kind} ${e.startSec}-${e.endSec}`).join(', ')})`);
+    assert(m[0].cls.segments.length === 3 && m[0].cls.segments[2].sec === 12.5 && near(m[0].cls.loudSec, 0.9, 1e-9), `merge: segments concatenated with offsets (${JSON.stringify(m[0].cls.segments.map((g) => g.sec))})`);
+    assert(m[1].startSec === 30 && m[1].endSec === 36 && m[2].kind === 'breath' && m[3].startSec === 40 && m[3].endSec === 44 && m[4].rhythmic && m[5].kind === 'speech', 'merge: gap, breath, rhythmic and speech events stay separate');
+    assert(NS.mergeAdjacent([ev(10, 16, 'bang'), ev(16, 20.5, 'bang')], { maxClip: 8 }).length === 2, 'merge: not beyond maxClip');
+    assert(NS.mergeAdjacent([ev(10, 16, 'bang', { truncated: true }), ev(16, 20.5, 'bang')], { maxClip: 120 }).length === 2, 'merge: a clip cut at maxClip is not extended');
+    assert(NS.mergeAdjacent([ev(10, 16, 'bang'), ev(16, 20.5, 'bang', { selected: false })], { maxClip: 120 })[0].selected === false, 'merge: an unselected part unselects the merged event');
     // רעש מחזורי: 8 אירועים כל 3.5 שניות + אחד בודד
     const list = []; for (let k = 0; k < 8; k++) list.push({ noiseSec: 10 + k * 3.5 + (k % 2 ? 0.2 : 0), startSec: 8 + k * 3.5, endSec: 12 + k * 3.5 }); list.push({ noiseSec: 60, startSec: 58, endSec: 62 });
     const nflag = NS.markRhythmic(list);
