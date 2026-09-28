@@ -808,8 +808,9 @@
     const low = modeOf('impBand') === 'low';
     imp.band = low ? 'low' : 'full';
     imp.levels = low ? imp.levelsLow : imp.levelsFull; imp.floorDb = low ? imp.floorLow : imp.floorFull;
-    // בתדרים נמוכים רמת הרקע נמוכה מאוד, ולכן "רקע + 12" יהיה רגיש מדי; דפיקות דרך הקיר נמצאות בערך באותה רמה בשני הטווחים
-    const thr = Math.min(99, Math.max(1, Math.round(low ? Math.max(disp(imp.floorLow) + 12, disp(imp.floorFull) + 8) : disp(imp.floorDb) + 12)));
+    // הסף המוצע: רקע + 8. דפיקות שקטות דרך הקיר הן לעיתים רק 8–13 dB מעל הרקע, ורקע + 12 פספס את רובן.
+    // בתדרים נמוכים רמת הרקע נמוכה מאוד, ולכן "רקע + 8" שם יהיה רגיש מדי; דפיקות דרך הקיר נמצאות בערך באותה רמה בשני הטווחים
+    const thr = Math.min(99, Math.max(1, Math.round(low ? Math.max(disp(imp.floorLow) + 8, disp(imp.floorFull) + 4) : disp(imp.floorDb) + 8)));
     $('#impThr').value = thr; $('#impFloor').textContent = disp(imp.floorDb).toFixed(0);
     recountImport();
   }

@@ -88,7 +88,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
   let r = await importFile('night_2026-09-26_23-00-00.wav', { deselect: [1] });
   assert(/^2026-09-26T23:00(:00)?$/.test(r.start) && /שם הקובץ/.test(r.src), `wav: start inferred from filename (${r.start}, ${r.src})`);
   assert(/WAV/.test(r.fmt) && r.dur === '00:00:40', `wav: format/duration shown (${r.fmt}; ${r.dur})`);
-  assert(near(r.thr, 52, 2), `wav: suggested threshold ≈ floor+12 (${r.thr}, floor ${r.floor})`);
+  assert(near(r.thr, 48, 2), `wav: suggested threshold ≈ floor+8 (${r.thr}, floor ${r.floor})`);
   assert(r.selected === 2 && /2 מסומנים/.test(r.summary), `wav: 2 of 3 selected after unchecking the drag (${r.summary})`);
   checkSaved('wav', r, localMs(2026, 9, 26, 23, 0, 0), 0.06, [5, 25], ['bang', 'noise', 'bang']);
   assert(r.progressAfterReview && r.progressAfterSave, 'ui: progress bar sits under the button that started the step (review, save)');
