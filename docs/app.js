@@ -101,6 +101,10 @@
       // מסנן תדרים נמוכים (רעשי קיר ורצפה) – בשימוש כשההגדרה detectBand היא 'low'
       this.lpf = window.NoiseScan ? [new NoiseScan.Biquad('lowpass', NoiseScan.LOW_BAND_HZ, sampleRate), new NoiseScan.Biquad('lowpass', NoiseScan.LOW_BAND_HZ, sampleRate)] : null;
       this.tmp = null;
+      // אירוע שהסתיים מחכה pre שניות לפני שהוא נמסר: אם רעש חדש מתחיל בינתיים, הקליפים צמודים והם אפיזודה אחת
+      // (סדרת דפיקות, דפיקה ואז גרירה) ומתאחדים לאירוע אחד, כמו בייבוא. נשימות ודיבור לא מתאחדים.
+      this.held = null;
+      this.classifier = window.NoiseScan ? (samples) => { try { return NoiseScan.classify(samples, sampleRate).kind; } catch (e) { return 'unknown'; } } : () => 'unknown';
     }
     push(samples, wall) {
       let sumSq = 0;
@@ -119,6 +123,9 @@
       const loud = disp(db) >= this.s.threshold;
       const chunkMs = samples.length / this.sr * 1000;
       const endWall = wall + chunkMs;
+
+      // אירוע מוחזק שעברו pre שניות מסופו בלי רעש חדש: נמסר כמו שהוא
+      if (this.held && !this.active && endWall - this.held.endTs >= this.s.pre * 1000) this.emit(this.held);
 
       if (this.active) {
         const ev = this.active;
@@ -159,17 +166,33 @@
       this.recent = []; this.recentSamples = 0;
       const out = new Float32Array(ev.n);
       let o = 0; for (const c of ev.chunks) { out.set(c, o); o += c.length; }
-      this.onEvent({
+      let e = {
         startTs: Math.round(ev.startWall),
         noiseTs: Math.round(ev.firstLoudWall),
         endTs: Math.round(ev.startWall + ev.n / this.sr * 1000),
         durationSec: ev.n / this.sr,
-        peakDb: ev.peakDb,
+        peakDb: ev.peakDb, sumSq: ev.sumSq,
         avgDb: 20 * Math.log10(Math.max(Math.sqrt(ev.sumSq / ev.n), 1e-6)),
-        sampleRate: this.sr, samples: out, truncated,
-      });
+        sampleRate: this.sr, samples: out, truncated, merged: 1,
+      };
+      e.kind = this.classifier(out);
+      const held = this.held; this.held = null;
+      if (held) {
+        // האירוע הזה התחיל בתוך pre שניות מסוף המוחזק (אחרת המוחזק כבר היה נמסר), והקליפים צמודים
+        const apart = window.NoiseScan ? NoiseScan.keepsApart : (x) => x.kind === 'breath' || x.kind === 'speech';
+        if (!held.truncated && !apart(held) && !apart(e) && held.durationSec + e.durationSec <= this.s.maxClip) e = this.merge(held, e);
+        else this.emit(held);
+      }
+      if (truncated) this.emit(e); else this.held = e;
     }
-    flush() { if (this.active) this.finish(this.active, true); }
+    merge(a, b) {
+      const samples = new Float32Array(a.samples.length + b.samples.length); samples.set(a.samples, 0); samples.set(b.samples, a.samples.length);
+      const n = samples.length, sumSq = a.sumSq + b.sumSq;
+      const kind = window.NoiseScan ? NoiseScan.mergedKind(a, b) : (a.kind || b.kind);
+      return Object.assign({}, a, { endTs: b.endTs, durationSec: n / this.sr, peakDb: Math.max(a.peakDb, b.peakDb), sumSq, avgDb: 20 * Math.log10(Math.max(Math.sqrt(sumSq / n), 1e-6)), samples, truncated: b.truncated, kind, merged: (a.merged || 1) + (b.merged || 1) });
+    }
+    emit(e) { this.held = null; delete e.sumSq; this.onEvent(e); }
+    flush() { if (this.active) this.finish(this.active, true); if (this.held) this.emit(this.held); }
   }
 
   // ---------- WAV ----------
@@ -363,13 +386,13 @@
   });
 
   async function saveEvent(ev) {
-    let kind = 'unknown';
-    try { if (window.NoiseScan) kind = NoiseScan.classify(ev.samples, ev.sampleRate).kind; } catch (e) { /* ignore */ }
+    let kind = ev.kind || 'unknown';
+    if (kind === 'unknown') { try { if (window.NoiseScan) kind = NoiseScan.classify(ev.samples, ev.sampleRate).kind; } catch (e) { /* ignore */ } }
     if ((kind === 'speech' && settings.skipSpeech) || (kind === 'breath' && settings.skipBreath)) { skippedSpeech++; $('#nightSkipped').textContent = `לא נשמרו (סינון ${kind === 'speech' ? 'דיבור' : 'נשימות'}): ${skippedSpeech}`; return; }
     const dev = deviceInfo();
     const rec = { kind, uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       startTs: ev.startTs, noiseTs: ev.noiseTs, endTs: ev.endTs, durationSec: ev.durationSec,
-      peakDb: ev.peakDb, avgDb: ev.avgDb, sampleRate: ev.sampleRate, truncated: ev.truncated,
+      peakDb: ev.peakDb, avgDb: ev.avgDb, sampleRate: ev.sampleRate, truncated: ev.truncated, merged: ev.merged || 1,
       note: '', sessionId, blob: encodeWav(ev.samples, ev.sampleRate),
     };
     try {
@@ -486,6 +509,7 @@
             <span title="אורך הקליפ כולל השניות שלפני ואחרי">${fmtDur(e.durationSec)}</span>
             ${kindTag(e.kind, e.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '')}
             ${e.truncated ? '<span class="tag">קטוע</span>' : ''}
+            ${e.merged > 1 ? `<span class="tag" title="כמה רעשים ברצף שאוחדו לאירוע אחד">אוחד מ-${e.merged}</span>` : ''}
             ${e.source === 'file' ? `<span class="tag file" title="${escapeHtml(e.sourceName || '')} @ ${fmtHms(e.offsetSec)}">מקובץ</span>` : ''}
             ${cloudTag(e)}
             ${e.timeCorrected ? `<span class="tag" title="הזמן תוקן ידנית. במקור: ${fmtDate(e.originalNoiseTs)} ${fmtTime(e.originalNoiseTs)}">זמן תוקן</span>` : ''}
@@ -851,6 +875,9 @@
     // רצף מחזורי הופך "רעש רציף" לנשימה רק אם הצליל עצמו מתאים לנשימה: כמעט בלי תדרים נמוכים (גרירה או דפיקה מכילות הרבה)
     const lfOf = (cls) => (cls && cls.segments && cls.segments.length ? Math.max(...cls.segments.map((g) => g.lfRatio)) : 0);
     for (const r of imp.review) if (r.rhythmic && ['noise', 'unknown'].includes(r.kind) && lfOf(r.cls) < 0.3) r.kind = 'breath';
+    // אירועים צמודים (הרעש הבא הגיע לפני שנגמרו הזנב וה-pre-roll של הקודם) הם אפיזודה אחת: סדרת דפיקות, דפיקה ואז כיסא.
+    // מאחדים לאירוע אחד; נשימות, דיבור ורעש מחזורי נשארים נפרדים, ולא עוברים את אורך הקליפ המרבי
+    imp.review = NoiseScan.mergeAdjacent(imp.review, { maxClip: settings.maxClip });
     imp.filter = { kinds: new Set(KIND_ORDER), minLevel: 0, sort: 'time' };
     $('#revMinLevel').value = 0; $('#revSortTime').checked = true;
     $('#impProgress').hidden = true; $('#impReviewBtn').disabled = false;
@@ -883,7 +910,7 @@
         <label class="rev-main">
           <input type="checkbox" data-act="sel" ${r.selected ? 'checked' : ''}>
           <span class="ev-time"><span class="ltr">${fmtTime(ts)}</span><small class="ltr">${fmtDate(ts)}</small></span>
-          <span class="ev-meta">שיא <b>${disp(r.peakDb).toFixed(0)}</b> · ${fmtDur(r.endSec - r.startSec)} ${kindTag(r.kind, [r.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '', segText(r.cls)].filter(Boolean).join('. '))}${r.truncated ? '<span class="tag">קטוע</span>' : ''}</span>
+          <span class="ev-meta">שיא <b>${disp(r.peakDb).toFixed(0)}</b> · ${fmtDur(r.endSec - r.startSec)} ${kindTag(r.kind, [r.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '', segText(r.cls)].filter(Boolean).join('. '))}${r.truncated ? '<span class="tag">קטוע</span>' : ''}${r.merged > 1 ? `<span class="tag" title="כמה רעשים ברצף שאוחדו לאירוע אחד">אוחד מ-${r.merged}</span>` : ''}</span>
         </label>
         <button class="btn small" data-act="play" title="האזן">▶</button>
         <div class="player" hidden></div>`;
@@ -923,7 +950,7 @@
     const saveOne = async (e, samples, sampleRate) => {
       const rec = {
         startTs: Math.round(startMs + e.startSec * 1000), noiseTs: Math.round(startMs + e.noiseSec * 1000), endTs: Math.round(startMs + e.endSec * 1000),
-        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind, rhythmic: !!e.rhythmic,
+        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind, rhythmic: !!e.rhythmic, merged: e.merged || 1,
         sessionId: importId, source: 'file', sourceName: imp.file.name, offsetSec: e.noiseSec, blob: encodeWav(samples, sampleRate),
         uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       };

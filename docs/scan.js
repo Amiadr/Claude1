@@ -549,7 +549,7 @@
 
   // ---------- סיווג גס של קליפ ----------
   // מחלק את הקטע הרועש למקטעים (לפי הפסקות שקט), ומסווג כל מקטע לפי מאפיינים אקוסטיים פשוטים:
-  //   דפיקה  – התקפה מהירה (< 30ms), אנרגיה שדועכת, בעיקר תדרים נמוכים
+  //   דפיקה  – שיא בולט שנעלם תוך 200ms, או התקפה מיידית (< 30ms) ודעיכה לאורך המקטע; גם כשהיא רק 10 dB מעל הרקע
   //   נשימה  – עלייה איטית, איוושה בתדרים גבוהים, כמעט בלי תדרים נמוכים, לא קולי
   //   רעש רציף (גרירה וכד') – מתמשך בלי דעיכה
   //   דיבור  – מחזוריות עם גובה צליל משתנה והברות (נמדד על כל הקליפ)
@@ -576,7 +576,15 @@
       rms[f] = Math.sqrt(a / frame); eLo[f] = b / frame; eHi[f] = c / frame; if (rms[f] > peakRms) peakRms = rms[f];
     }
     for (let i = 0; i < n; i++) { const a = Math.abs(x[i]); if (a > peakAbs) peakAbs = a; }
-    const gate = peakRms * 0.1; // 20 dB מתחת לשיא
+    // רמת הרקע של הקליפ (אחוזון 20 של הפריימים; הקליפ כולל שקט לפני הרעש ואחריו) וסף המקטעים:
+    // 20 dB מתחת לשיא, אבל לא מתחת לרקע + 6 dB, אחרת דפיקה שקטה (10–15 dB מעל הרקע) נבלעת ברקע וכל הקליפ
+    // נראה כמקטע אחד ארוך ("רעש רציף"); ולא מעל שיא − 6 dB, כדי שרעש ממושך שממלא את הקליפ יישאר מקטע אחד.
+    const sorted = Float32Array.from(rms).sort(); const floorRms = sorted[Math.floor(nf * 0.2)];
+    const gate = Math.max(peakRms * 0.1, Math.min(floorRms * 2, peakRms * 0.5));
+    // מעטפת "מעל הרקע": מה שנשאר אחרי הפחתת אנרגיית הרקע. מדדי הצורה (התקפה, דעיכה) נמדדים עליה, כך שגם
+    // דפיקה שקטה נראית כמו דפיקה ולא כמו גבעה נמוכה על רקע גבוה.
+    const floorSq = floorRms * floorRms;
+    const ex = new Float32Array(nf); for (let f = 0; f < nf; f++) ex[f] = Math.sqrt(Math.max(rms[f] * rms[f] - floorSq, 0));
     // מקטעים רועשים; הפסקות קצרות מ-150ms לא מפרידות
     const segs = []; let cur = null, quiet = 0, rawOnsets = 0, prevLoud = false;
     for (let f = 0; f < nf; f++) {
@@ -602,26 +610,35 @@
     };
     const segments = [];
     for (const sg of segs) {
-      const len = sg.b - sg.a + 1; let peakF = sg.a, segPeak = 0, sumRms = 0, sLo = 0, sAll = 0, sHi = 0, segVoiced = 0;
+      const len = sg.b - sg.a + 1; let peakF = sg.a, segPeak = 0, sumEx = 0, sLo = 0, sAll = 0, sHi = 0, segVoiced = 0;
       for (let f = sg.a; f <= sg.b; f++) {
         if (rms[f] > segPeak) { segPeak = rms[f]; peakF = f; }
-        sumRms += rms[f]; sLo += eLo[f]; sHi += eHi[f]; sAll += rms[f] * rms[f];
+        sumEx += ex[f]; sLo += eLo[f]; sHi += eHi[f]; sAll += rms[f] * rms[f];
         if (rms[f] >= gate) { loud++; sumLoudRms += rms[f]; const v = voicedOf(f); if (v.best >= 0.6) { voiced++; segVoiced++; lags.push(v.bestLag); } }
       }
       const third = Math.max(1, Math.floor(len / 3));
       let first = 0, mid = 0, last = 0;
-      for (let f = sg.a; f < sg.a + third; f++) first += rms[f];
-      for (let f = sg.a + third; f < sg.a + 2 * third; f++) mid += rms[f];
-      for (let f = sg.b - third + 1; f <= sg.b; f++) last += rms[f];
+      for (let f = sg.a; f < sg.a + third; f++) first += ex[f];
+      for (let f = sg.a + third; f < sg.a + 2 * third; f++) mid += ex[f];
+      for (let f = sg.b - third + 1; f <= sg.b; f++) last += ex[f];
       const attackFrames = peakF - sg.a; const decayRatio = last / Math.max(first, 1e-9);
       const hump = mid / Math.max((first + last) / 2, 1e-9); // מעטפת "גבעה" (עלייה ואז ירידה) לעומת מעטפת שטוחה
+      // כמה נשאר מהשיא 150–200 אלפיות שנייה אחריו (גם מעבר לסוף המקטע): דפיקה יורדת מתחת ל-45%, גרירה נשארת.
+      // מקטע קצר של דפיקה שקטה נגמר קרוב לשיא, ולכן decayRatio (שליש אחרון מול שליש ראשון) לא מספיק שם.
+      const peakEx = ex[peakF]; let after = 0, na = 0;
+      for (let f = peakF + 15; f <= Math.min(nf - 1, peakF + 20); f++) { after += ex[f]; na++; }
+      const decay200 = na ? after / na / Math.max(peakEx, 1e-9) : 0;
+      const impulseDb = 20 * Math.log10((peakEx + 1e-9) / (sumEx / len + 1e-9)); // כמה השיא בולט מעל ממוצע המקטע
       const lfRatio = sLo / Math.max(sAll, 1e-12), hfRatio = sHi / Math.max(sAll, 1e-12);
       const dur = (len * hop) / r; const vFrac = segVoiced / len;
       let kind;
-      if (attackFrames <= 3 && dur <= 1.5 && decayRatio < 0.35) kind = 'bang';
+      // דפיקה: או התקפה מיידית ודעיכה לאורך המקטע (דפיקה שמהדהדת), או שיא בולט שנעלם תוך 200ms
+      // (דפיקה קצרה, גם שקטה; אם ההתקפה איטית מ-100ms דורשים שיא בולט יותר, כדי לא לתפוס גבעות של גרירה)
+      if (dur <= 1.5 && ((attackFrames <= 3 && decayRatio < 0.35) || (decay200 <= 0.45 && impulseDb >= (attackFrames <= 10 ? 3 : 6)))) kind = 'bang';
       else if (dur >= 0.3 && dur <= 4 && attackFrames >= 5 && lfRatio < 0.2 && hfRatio > 0.1 && hump >= 1.4 && vFrac < 0.3) kind = 'breath';
+      else if (dur < 0.25) continue; // בליטה קצרה שרק חצתה את הסף: לא דפיקה ולא רעש רציף, לא נספרת
       else kind = 'drag';
-      segments.push({ kind, sec: (sg.a * hop) / r, dur: Math.round(dur * 100) / 100, attackMs: Math.round((attackFrames * hop * 1000) / r), decayRatio: Math.round(decayRatio * 100) / 100, hump: Math.round(hump * 100) / 100, lfRatio: Math.round(lfRatio * 100) / 100, hfRatio: Math.round(hfRatio * 100) / 100 });
+      segments.push({ kind, sec: (sg.a * hop) / r, dur: Math.round(dur * 100) / 100, attackMs: Math.round((attackFrames * hop * 1000) / r), decayRatio: Math.round(decayRatio * 100) / 100, decay200: Math.round(decay200 * 100) / 100, impulseDb: Math.round(impulseDb * 10) / 10, hump: Math.round(hump * 100) / 100, lfRatio: Math.round(lfRatio * 100) / 100, hfRatio: Math.round(hfRatio * 100) / 100 });
     }
     const loudSec = (loud * hop) / r;
     const voicedFrac = loud ? voiced / loud : 0;
@@ -661,6 +678,36 @@
     return flagged.size;
   }
 
+  // ---------- איחוד אירועים צמודים ----------
+  // הזיהוי סוגר אירוע אחרי זנב של שקט, ואירוע חדש מקבל pre-roll. כשהרעש הבא מגיע לפני שנגמרו הזנב וה-pre-roll,
+  // הקליפים צמודים (השני מתחיל בדיוק איפה שהראשון נגמר) והם בעצם אפיזודה אחת: סדרת דפיקות, דפיקה וגרירה אחריה,
+  // דפיקות ואז כיסא שנטרק. מאחדים אותם לאירוע אחד, חוץ מנשימות, דיבור ורעש מחזורי (שם ההפרדה היא המידע),
+  // ובלי לעבור את אורך הקליפ המרבי. list: אירועי הסקירה אחרי הסיווג (startSec/endSec/kind/cls/rhythmic).
+  function mergedKind(a, b) {
+    const bangs = [a, b].filter((e) => e.kind === 'bang' || e.kind === 'bangdrag').length;
+    const drags = [a, b].filter((e) => e.kind === 'noise' || e.kind === 'bangdrag').length;
+    return bangs && drags ? 'bangdrag' : bangs ? 'bang' : drags ? 'noise' : (a.kind || b.kind || 'unknown');
+  }
+  function keepsApart(e) { return e.kind === 'breath' || e.kind === 'speech' || !!e.rhythmic; }
+  function mergeTwo(a, b) {
+    const da = a.endSec - a.startSec, db = b.endSec - b.startSec, kind = mergedKind(a, b);
+    const shift = (g) => Object.assign({}, g, { sec: Math.round((g.sec + b.startSec - a.startSec) * 100) / 100 });
+    const segments = [...((a.cls && a.cls.segments) || []), ...((b.cls && b.cls.segments) || []).map(shift)];
+    const cls = Object.assign({}, a.cls || {}, { kind, segments, loudSec: ((a.cls && a.cls.loudSec) || 0) + ((b.cls && b.cls.loudSec) || 0) });
+    const avgDb = 10 * Math.log10((da * Math.pow(10, a.avgDb / 10) + db * Math.pow(10, b.avgDb / 10)) / Math.max(da + db, 1e-9));
+    return Object.assign({}, a, { endSec: b.endSec, peakDb: Math.max(a.peakDb, b.peakDb), avgDb, truncated: !!b.truncated, kind, cls, merged: (a.merged || 1) + (b.merged || 1), selected: a.selected !== false && b.selected !== false });
+  }
+  function mergeAdjacent(list, opts) {
+    const maxClip = (opts && opts.maxClip) || Infinity;
+    const out = [];
+    for (const e of list.slice().sort((x, y) => x.startSec - y.startSec)) {
+      const p = out[out.length - 1];
+      if (p && !p.truncated && !keepsApart(p) && !keepsApart(e) && e.startSec - p.endSec <= FRAME_SEC / 2 && e.endSec - p.startSec <= maxClip + FRAME_SEC / 2) { out[out.length - 1] = mergeTwo(p, e); continue; }
+      out.push(e);
+    }
+    return out;
+  }
+
   async function open(file) {
     const kind = await sniff(file);
     if (kind === 'wav') return new WavScanner(file).open();
@@ -688,5 +735,5 @@
     return c;
   }
 
-  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, markRhythmic, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
+  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, markRhythmic, mergeAdjacent, mergedKind, keepsApart, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
 })(typeof self !== 'undefined' ? self : globalThis);
