@@ -427,7 +427,8 @@
     samplesDb.sort((a, b) => a - b); fullDb.sort((a, b) => a - b);
     const floor = samplesDb[Math.floor(samplesDb.length * 0.9)]; // כמעט הרמה הגבוהה ביותר בשקט
     const floorFull = fullDb[Math.floor(fullDb.length * 0.9)];
-    settings.threshold = Math.min(99, Math.round(settings.detectBand === 'low' ? Math.max(floor + 12, floorFull + 8) : floor + 12));
+    // רקע + 8: דפיקות שקטות דרך הקיר הן לעיתים רק 8–13 dB מעל הרקע (בתדרים נמוכים הרקע נמוך מאוד, ולכן שם לא מתחת לרקע המלא + 4)
+    settings.threshold = Math.min(99, Math.round(settings.detectBand === 'low' ? Math.max(floor + 8, floorFull + 4) : floor + 8));
     saveSettings(); syncSettingsUi();
     log('מידע', `כיול: רמת רקע ${floor.toFixed(0)}, סף חדש ${settings.threshold}`);
   }
