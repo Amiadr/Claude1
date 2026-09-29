@@ -484,7 +484,78 @@
   const KIND_LABEL = { bang: 'דפיקה', bangdrag: 'דפיקה + גרירה', noise: 'רעש רציף', breath: 'נשימה', speech: 'ייתכן דיבור', unknown: 'לא ידוע' };
   const KIND_ORDER = ['bang', 'bangdrag', 'noise', 'breath', 'speech', 'unknown'];
   kindFilter = new Set(KIND_ORDER);
-  function segText(cls) { return cls && cls.segments && cls.segments.length ? 'רצף: ' + cls.segments.map((g) => `${{ bang: 'דפיקה', drag: 'רעש רציף', breath: 'נשימה' }[g.kind] || g.kind} ${g.dur}s`).join(', ') : ''; }
+  function segText(cls) {
+    if (!cls || !cls.segments || !cls.segments.length) return '';
+    const knocks = cls.segments.filter((g) => g.kind === 'bang').length;
+    const parts = knocks ? [knocks === 1 ? 'דפיקה' : `${knocks} דפיקות`] : [];
+    for (const g of cls.segments) if (g.kind !== 'bang') parts.push(`${{ drag: 'רעש רציף', breath: 'נשימה' }[g.kind] || g.kind} ${g.dur} שנ׳`);
+    return 'מבנה: ' + parts.join(', ');
+  }
+  // ---------- נגן עם צורת הגל ----------
+  // מצייר את מעטפת הקליפ (דציבלים מעל רקע הקליפ, כמו במסווג) על קנבס, מסמן עליה את המקטעים שסווגו
+  // (דפיקה / רעש רציף / נשימה) ואת תחילת הרעש, והסמן זז על הצורה בזמן הניגון. לחיצה על הקנבס מדלגת.
+  async function wavSamples(blob) {
+    const u8 = new Uint8Array(await blob.arrayBuffer()); const dv = new DataView(u8.buffer);
+    let p = 12, fmt = null, data = null;
+    while (p + 8 <= u8.length) {
+      const id = String.fromCharCode(u8[p], u8[p + 1], u8[p + 2], u8[p + 3]); const size = dv.getUint32(p + 4, true);
+      if (id === 'fmt ') fmt = { channels: dv.getUint16(p + 10, true), sampleRate: dv.getUint32(p + 12, true), bits: dv.getUint16(p + 22, true) };
+      else if (id === 'data') { data = { offset: p + 8, size: Math.min(size, u8.length - p - 8) }; break; }
+      p += 8 + size + (size & 1);
+    }
+    if (!fmt || !data || fmt.bits !== 16) throw new Error('WAV לא נתמך');
+    const frames = Math.floor(data.size / (2 * fmt.channels)); const out = new Float32Array(frames);
+    for (let i = 0; i < frames; i++) { let v = 0; for (let c = 0; c < fmt.channels; c++) v += dv.getInt16(data.offset + (i * fmt.channels + c) * 2, true); out[i] = v / (32768 * fmt.channels); }
+    return { samples: out, sampleRate: fmt.sampleRate };
+  }
+  const SEG_COLOR = { bang: 'rgba(245,158,11,.35)', drag: 'rgba(167,139,250,.30)', breath: 'rgba(148,163,184,.25)' };
+  function buildPlayer(container, { samples, sampleRate, blob, segments, noiseSec }) {
+    const dur = samples.length / sampleRate;
+    container.innerHTML = '';
+    const canvas = document.createElement('canvas'); canvas.className = 'wave'; canvas.title = 'לחיצה מדלגת למקום בקליפ';
+    const bar = document.createElement('div'); bar.className = 'player-bar';
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn small'; btn.textContent = '▶';
+    const time = document.createElement('span'); time.className = 'ltr time';
+    const legend = document.createElement('span'); legend.className = 'legend';
+    const marks = []; if (segments && segments.some((g) => g.kind === 'bang')) marks.push('<i style="background:rgba(245,158,11,.7)"></i>דפיקה');
+    if (segments && segments.some((g) => g.kind === 'drag')) marks.push('<i style="background:rgba(167,139,250,.7)"></i>רעש רציף');
+    if (segments && segments.some((g) => g.kind === 'breath')) marks.push('<i style="background:rgba(148,163,184,.7)"></i>נשימה');
+    legend.innerHTML = marks.join(' ');
+    const audio = document.createElement('audio'); audio.preload = 'auto'; audio.src = URL.createObjectURL(blob);
+    bar.append(btn, time, legend); container.append(canvas, bar, audio);
+    // מעטפת לכל עמודה: דציבלים מעל רקע הקליפ (אחוזון 15), כך שגם דפיקה שקטה ליד כיסא רועש נראית
+    const W = Math.max(240, Math.floor(container.clientWidth || 320)), H = 72, dpr = Math.min(3, window.devicePixelRatio || 1);
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); canvas.style.height = `${H}px`;
+    const per = samples.length / W; const colDb = new Float32Array(W);
+    for (let c = 0; c < W; c++) { const a = Math.floor(c * per), b = Math.max(a + 1, Math.floor((c + 1) * per)); let ss = 0; for (let i = a; i < b; i++) ss += samples[i] * samples[i]; colDb[c] = 10 * Math.log10(ss / (b - a) + 1e-12); }
+    const sorted = Float32Array.from(colDb).sort(); const floor = sorted[Math.floor(W * 0.15)];
+    let maxE = 1; const env = new Float32Array(W); for (let c = 0; c < W; c++) { env[c] = Math.max(0, colDb[c] - floor); if (env[c] > maxE) maxE = env[c]; }
+    const ctx2 = canvas.getContext('2d'); ctx2.scale(dpr, dpr);
+    const x = (t) => (t / dur) * W;
+    function draw() {
+      ctx2.clearRect(0, 0, W, H);
+      ctx2.fillStyle = '#0b1220'; ctx2.fillRect(0, 0, W, H);
+      for (const g of segments || []) { ctx2.fillStyle = SEG_COLOR[g.kind] || 'rgba(148,163,184,.2)'; const x0 = x(g.sec), w = Math.max(3, x(g.sec + g.dur) - x0); ctx2.fillRect(x0, 0, w, H); }
+      ctx2.fillStyle = '#38bdf8';
+      ctx2.beginPath(); ctx2.moveTo(0, H / 2);
+      for (let c = 0; c < W; c++) ctx2.lineTo(c, H / 2 - (env[c] / maxE) * (H / 2 - 3));
+      for (let c = W - 1; c >= 0; c--) ctx2.lineTo(c, H / 2 + (env[c] / maxE) * (H / 2 - 3));
+      ctx2.closePath(); ctx2.fill();
+      if (noiseSec > 0 && noiseSec < dur) { ctx2.strokeStyle = 'rgba(226,232,240,.5)'; ctx2.setLineDash([3, 3]); ctx2.beginPath(); ctx2.moveTo(x(noiseSec), 0); ctx2.lineTo(x(noiseSec), H); ctx2.stroke(); ctx2.setLineDash([]); }
+      const t = audio.currentTime || 0;
+      ctx2.fillStyle = 'rgba(255,255,255,.9)'; ctx2.fillRect(x(t) - 1, 0, 2, H);
+    }
+    const fmtT = (t) => `${Math.floor(t / 60)}:${pad(Math.floor(t % 60))}.${Math.floor((t % 1) * 10)}`;
+    const tick = () => { draw(); time.textContent = `${fmtT(audio.currentTime || 0)} / ${fmtT(dur)}`; if (!audio.paused && !audio.ended) requestAnimationFrame(tick); };
+    audio.addEventListener('play', () => { btn.textContent = '⏸'; tick(); });
+    audio.addEventListener('pause', () => { btn.textContent = '▶'; tick(); });
+    audio.addEventListener('ended', () => { btn.textContent = '▶'; tick(); });
+    audio.addEventListener('seeked', tick);
+    btn.addEventListener('click', () => { if (audio.paused) audio.play().catch(() => {}); else audio.pause(); });
+    canvas.addEventListener('click', (e) => { const rect = canvas.getBoundingClientRect(); const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)); audio.currentTime = frac * dur; tick(); });
+    tick();
+    return { audio, play: () => audio.play().catch(() => {}) };
+  }
   function kindTag(kind, extra) { return KIND_LABEL[kind] ? `<span class="tag kind-${kind}" title="סיווג אוטומטי לפי מאפייני הקול, עלול לטעות${extra ? '. ' + escapeHtml(extra) : ''}">${KIND_LABEL[kind]}${kind === 'breath' && extra && /מחזורי/.test(extra) ? '?' : ''}</span>` : ''; }
   function renderBulkBar() {
     const n = selectedIds.size; $('#bulkBar').hidden = !n; $('#bulkCount').textContent = n;
@@ -558,8 +629,12 @@
       if (!p.hidden) { p.hidden = true; p.innerHTML = ''; return; }
       let blob; try { blob = await ensureBlob(ev, btn); } catch (err) { alert('לא ניתן להוריד מ-Drive: ' + err.message); return; }
       const li2 = $(`#events li.event[data-id="${id}"]`) || li; const p2 = li2.querySelector('.player');
-      const a = document.createElement('audio'); a.controls = true; a.src = URL.createObjectURL(blob);
-      p2.innerHTML = ''; p2.appendChild(a); p2.hidden = false; a.play().catch(() => {});
+      p2.hidden = false;
+      try {
+        const { samples, sampleRate } = await wavSamples(blob);
+        let segments = []; try { if (window.NoiseScan) segments = NoiseScan.classify(samples, sampleRate).segments; } catch (err) { /* ignore */ }
+        buildPlayer(p2, { samples, sampleRate, blob, segments, noiseSec: (ev.noiseTs - ev.startTs) / 1000 }).play();
+      } catch (err) { const a = document.createElement('audio'); a.controls = true; a.src = URL.createObjectURL(blob); p2.innerHTML = ''; p2.appendChild(a); a.play().catch(() => {}); }
     } else if (btn.dataset.act === 'download') {
       let blob; try { blob = await ensureBlob(ev, btn); } catch (err) { alert('לא ניתן להוריד מ-Drive: ' + err.message); return; }
       downloadBlob(blob, fileName(ev));
@@ -933,8 +1008,8 @@
     const r = imp.review[i]; const btn = li.querySelector('button[data-act="play"]'); btn.disabled = true;
     try {
       const c = await extractOne(r.startSec, r.endSec);
-      const a = document.createElement('audio'); a.controls = true; a.src = URL.createObjectURL(encodeWav(c.samples, c.sampleRate));
-      p.innerHTML = ''; p.appendChild(a); p.hidden = false; a.play().catch(() => {});
+      p.hidden = false;
+      buildPlayer(p, { samples: c.samples, sampleRate: c.sampleRate, blob: encodeWav(c.samples, c.sampleRate), segments: (r.cls && r.cls.segments) || [], noiseSec: r.noiseSec - r.startSec }).play();
     } catch (e) { p.innerHTML = `<span class="error">לא ניתן לנגן: ${escapeHtml(e.message)}</span>`; p.hidden = false; }
     finally { btn.disabled = false; }
   }

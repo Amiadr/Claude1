@@ -156,12 +156,26 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     for (const at of [2.6, 3.8, 5.2]) for (let i = 0; i < 0.05 * sr; i++) knocks[Math.round(at * sr) + i] += 0.006 * gauss(); // בליטות של 50ms, ~4 dB מעל הרקע
     const ck = NS.classify(knocks, sr);
     assert(ck.kind === 'bang' && ck.segments.filter((g) => g.kind === 'bang').length === 3, `classify: 3 quiet knocks + background blips → ${ck.kind} [${ck.segments.map((g) => g.kind + '@' + g.sec.toFixed(1)).join(', ')}]`);
+    // מבנה, לא עוצמה: כיסא רועש (30 dB מעל הדפיקות) באותו קליפ לא מבליע את הדפיקות השקטות, וכל דפיקה נספרת בנפרד
+    const mixed = mk(9); for (let i = 0; i < mixed.length; i++) mixed[i] = 0.004 * gauss();
+    for (const at of [2, 3.1, 4.5]) for (let i = 0; i < 0.3 * sr; i++) { const t = i / sr; mixed[Math.round(at * sr) + i] += 0.06 * Math.sin(2 * Math.PI * 100 * t) * Math.exp(-10 * t) * Math.min(1, t / 0.03); }
+    for (let i = 0; i < 0.5 * sr; i++) { const t = i / sr; mixed[Math.round(6.5 * sr) + i] += 0.9 * (Math.sin(2 * Math.PI * 70 * t) + 0.4 * gauss()) * Math.exp(-9 * t) * Math.min(1, t / 0.01); }
+    const cm = NS.classify(mixed, sr);
+    assert(cm.kind === 'bang' && cm.knocks === 4 && cm.segments[3].heightDb - cm.segments[0].heightDb > 20, `classify: 3 quiet knocks + loud chair → ${cm.kind}, ${cm.knocks} knocks [${cm.segments.map((g) => g.heightDb).join(', ')} dB]`);
+    // גרירה של 1.5 שניות אחרי הכיסא: דפיקה + גרירה, והגרירה נמדדת בנפרד מהזנב של הטריקה
+    const chairDrag = Float32Array.from(mixed); { const lp = new NS.Biquad('lowpass', 900, sr); const dn = lp.run(Float32Array.from({ length: Math.round(1.5 * sr) }, () => gauss())); for (let i = 0; i < dn.length; i++) chairDrag[Math.round(7.2 * sr) + i] += 0.05 * dn[i]; }
+    const ccd = NS.classify(chairDrag, sr);
+    assert(ccd.kind === 'bangdrag' && ccd.knocks === 4 && ccd.segments.filter((g) => g.kind === 'drag').length === 1 && near(ccd.segments.find((g) => g.kind === 'drag').sec, 7.2, 0.15), `classify: knocks + chair + drag → ${ccd.kind} [${ccd.segments.map((g) => g.kind + '@' + g.sec.toFixed(1)).join(', ')}]`);
+    // רקע שעולה לאט (מכונית עוברת): רעש רציף, בלי דפיקות
+    const swell = mk(8); for (let i = 0; i < swell.length; i++) swell[i] = 0.004 * gauss(); { const lp = new NS.Biquad('lowpass', 500, sr); const dn = lp.run(Float32Array.from({ length: Math.round(4 * sr) }, () => gauss())); for (let i = 0; i < dn.length; i++) { const t = i / dn.length; swell[Math.round(2 * sr) + i] += 0.04 * dn[i] * Math.sin(Math.PI * t); } }
+    const csw = NS.classify(swell, sr);
+    assert(csw.kind === 'noise' && csw.knocks === 0, `classify: slow swell → ${csw.kind}, ${csw.knocks} knocks`);
     // איחוד אירועים צמודים אחרי הסיווג
-    const ev = (startSec, endSec, kind, extra) => Object.assign({ startSec, noiseSec: startSec + 2, endSec, peakDb: -40, avgDb: -55, truncated: false, kind, selected: true, cls: { kind, segments: [{ kind: kind === 'noise' ? 'drag' : 'bang', sec: 2, dur: 0.3 }], loudSec: 0.3 } }, extra || {});
+    const ev = (startSec, endSec, kind, extra) => Object.assign({ startSec, noiseSec: startSec + 2, endSec, peakDb: -40, avgDb: -55, truncated: false, kind, selected: true, cls: { kind, segments: [{ kind: kind === 'noise' ? 'drag' : 'bang', sec: 2, dur: 0.3 }], loudSec: 0.3, knocks: kind === 'noise' ? 0 : 1 } }, extra || {});
     const rev = [ev(10, 16, 'bang', { peakDb: -30 }), ev(16, 20.5, 'bang'), ev(20.5, 24, 'noise'), ev(30, 36, 'noise'), ev(36, 40, 'breath'), ev(40, 44, 'noise'), ev(44, 48, 'noise', { rhythmic: true }), ev(48, 52, 'speech')];
     const m = NS.mergeAdjacent(rev, { maxClip: 120 });
     assert(m.length === 6 && m[0].startSec === 10 && m[0].endSec === 24 && m[0].kind === 'bangdrag' && m[0].merged === 3 && m[0].peakDb === -30 && m[0].noiseSec === 12, `merge: 3 contiguous events → one bangdrag 10–24 (got ${m.map((e) => `${e.kind} ${e.startSec}-${e.endSec}`).join(', ')})`);
-    assert(m[0].cls.segments.length === 3 && m[0].cls.segments[2].sec === 12.5 && near(m[0].cls.loudSec, 0.9, 1e-9), `merge: segments concatenated with offsets (${JSON.stringify(m[0].cls.segments.map((g) => g.sec))})`);
+    assert(m[0].cls.segments.length === 3 && m[0].cls.segments[2].sec === 12.5 && near(m[0].cls.loudSec, 0.9, 1e-9) && m[0].cls.knocks === 2, `merge: segments concatenated with offsets (${JSON.stringify(m[0].cls.segments.map((g) => g.sec))})`);
     assert(m[1].startSec === 30 && m[1].endSec === 36 && m[2].kind === 'breath' && m[3].startSec === 40 && m[3].endSec === 44 && m[4].rhythmic && m[5].kind === 'speech', 'merge: gap, breath, rhythmic and speech events stay separate');
     assert(NS.mergeAdjacent([ev(10, 16, 'bang'), ev(16, 20.5, 'bang')], { maxClip: 8 }).length === 2, 'merge: not beyond maxClip');
     assert(NS.mergeAdjacent([ev(10, 16, 'bang', { truncated: true }), ev(16, 20.5, 'bang')], { maxClip: 120 }).length === 2, 'merge: a clip cut at maxClip is not extended');
