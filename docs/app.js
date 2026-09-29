@@ -725,23 +725,20 @@
   // ערכה קטנה שאפשר לשלוח לניתוח וכיול המסווג: הקליפים המסומנים (או כל המתויגים), מומרים ל-8 kHz מונו
   // (המסווג עובד ב-8 kHz ממילא; 10 שניות = 160 KB), ולצידם מה האפליקציה אמרה ומה המשתמש אמר.
   const ANALYSIS_RATE = 8000;
-  async function exportForAnalysis() {
-    let list = selectedIds.size ? events.filter((e) => selectedIds.has(e.id)) : filteredEvents().filter((e) => e.label);
-    list = list.slice().sort((a, b) => a.noiseTs - b.noiseTs);
-    if (!list.length) { alert('אין מה לייצא. סמן אירועים (תיבת הסימון), או תייג אירועים ב"מה זה באמת?" והייצוא ייקח את כל המתויגים.'); return; }
-    const btn = $('#analysisBtn'); btn.disabled = true; btn.textContent = 'אורז…';
+  // items: [{ meta: שדות האירוע (noiseTs, startTs, endTs, durationSec, peakDb, avgDb, kind, label, labelText, note, ...), samples: async () => ({ samples, sampleRate }) }]
+  async function buildAnalysisBundle(items, btn, idleText) {
+    btn.disabled = true; btn.textContent = 'אורז…';
     try {
       const dev = deviceInfo(); const clips = [], files = [];
-      for (let i = 0; i < list.length; i++) {
-        const e = list[i]; btn.textContent = `אורז ${i + 1}/${list.length}…`;
-        let blob; try { blob = await ensureBlob(e); } catch (err) { log('שגיאה', `ייצוא לניתוח: לא ניתן להוריד קליפ מ-Drive (${fmtTime(e.noiseTs)}): ${err.message}`); continue; }
-        const { samples, sampleRate } = await wavSamples(blob);
-        const small = NoiseScan.resample(samples, sampleRate, ANALYSIS_RATE);
+      for (let i = 0; i < items.length; i++) {
+        const e = items[i].meta; btn.textContent = `אורז ${i + 1}/${items.length}…`;
+        let src; try { src = await items[i].samples(); } catch (err) { log('שגיאה', `ייצוא לניתוח: לא ניתן לקרוא קליפ (${fmtTime(e.noiseTs)}): ${err.message}`); continue; }
+        const small = NoiseScan.resample(src.samples, src.sampleRate, ANALYSIS_RATE);
         let auto = null; try { auto = NoiseScan.classify(small, ANALYSIS_RATE, { envelope: true }); } catch (err) { /* ignore */ }
-        const file = `clips/${fmtStamp(e.noiseTs)}_${e.label || 'unlabeled'}_${String(e.uid || e.id).slice(0, 6)}.wav`;
+        const file = `clips/${fmtStamp(e.noiseTs)}_${e.label || 'unlabeled'}_${String(e.uid || e.id || i).slice(0, 6)}.wav`;
         files.push({ name: file, data: encodeWav(small, ANALYSIS_RATE), date: new Date(e.noiseTs) });
         clips.push({ file, id: e.id, uid: e.uid, noiseTime: new Date(e.noiseTs).toISOString(), noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, noiseSec: Math.round((e.noiseTs - e.startTs) / 10) / 100,
-          peakDb: Math.round(disp(e.peakDb) * 10) / 10, avgDb: Math.round(disp(e.avgDb) * 10) / 10, truncated: !!e.truncated, merged: e.merged || 1, rhythmic: !!e.rhythmic, source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0, originalSampleRate: sampleRate,
+          peakDb: Math.round(disp(e.peakDb) * 10) / 10, avgDb: Math.round(disp(e.avgDb) * 10) / 10, truncated: !!e.truncated, merged: e.merged || 1, rhythmic: !!e.rhythmic, source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0, originalSampleRate: src.sampleRate,
           kind: e.kind || '', label: e.label || '', labelText: e.labelText || '', note: e.note || '', auto });
         await new Promise((r) => setTimeout(r, 0));
       }
@@ -752,7 +749,26 @@
       downloadBlob(zip, `noise-samples_${fmtStamp(Date.now())}.zip`);
       log('מידע', `יוצאה ערכה לניתוח: ${clips.length} קליפים, ${fmtBytes(zip.size)}`);
     } catch (e) { alert('הייצוא נכשל: ' + e.message); }
-    finally { btn.disabled = false; btn.textContent = 'ייצוא לניתוח (מתויגים / מסומנים)'; }
+    finally { btn.disabled = false; btn.textContent = idleText; }
+  }
+  // מרשימת האירועים השמורים: המסומנים, או כל המתויגים בלילה המוצג
+  async function exportForAnalysis() {
+    let list = selectedIds.size ? events.filter((e) => selectedIds.has(e.id)) : filteredEvents().filter((e) => e.label);
+    list = list.slice().sort((a, b) => a.noiseTs - b.noiseTs);
+    if (!list.length) { alert('אין מה לייצא. סמן אירועים (תיבת הסימון), או תייג אירועים ב"מה זה באמת?" והייצוא ייקח את כל המתויגים.'); return; }
+    await buildAnalysisBundle(list.map((e) => ({ meta: e, samples: async () => wavSamples(await ensureBlob(e)) })), $('#analysisBtn'), 'ייצוא לניתוח (מתויגים / מסומנים)');
+  }
+  // משלב הסקירה של הייבוא, בלי לשמור: כל מה שתויג ב"מה זה באמת?" (הקליפים נחתכים מהקובץ)
+  async function exportReviewForAnalysis() {
+    if (!imp || !imp.review) return;
+    const list = imp.review.filter((r) => r.label);
+    if (!list.length) { alert('תייג אירועים ב"מה זה באמת?" והייצוא ייקח את כל המתויגים (אין צורך לשמור אותם).'); return; }
+    const startMs = currentStartMs() ?? imp.startMs ?? Date.now();
+    const items = list.map((r, i) => ({
+      meta: { id: i + 1, uid: `rev${i + 1}`, noiseTs: Math.round(startMs + r.noiseSec * 1000), startTs: Math.round(startMs + r.startSec * 1000), endTs: Math.round(startMs + r.endSec * 1000), durationSec: r.endSec - r.startSec, peakDb: r.peakDb, avgDb: r.avgDb, truncated: r.truncated, merged: r.merged || 1, rhythmic: !!r.rhythmic, source: 'file', sourceName: imp.file.name, offsetSec: r.noiseSec, kind: r.kind, label: r.label, labelText: r.labelText || '', note: '' },
+      samples: () => extractOne(r.startSec, r.endSec),
+    }));
+    await buildAnalysisBundle(items, $('#impAnalysisBtn'), 'ייצוא לניתוח (מתויגים)');
   }
   function readmeText(list) {
     return [
@@ -1443,6 +1459,7 @@
     $('#csvBtn').addEventListener('click', exportCsv);
     $('#zipBtn').addEventListener('click', exportZip);
     $('#analysisBtn').addEventListener('click', exportForAnalysis);
+    $('#impAnalysisBtn').addEventListener('click', exportReviewForAnalysis);
     $('#clearBtn').addEventListener('click', async () => {
       if (!confirm('למחוק את כל האירועים והיומן מהמכשיר? פעולה זו אינה הפיכה. ודא שייצאת ZIP קודם.')) return;
       await dbClear('events'); await dbClear('log'); await dbClear('scans');
