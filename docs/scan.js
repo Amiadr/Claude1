@@ -564,7 +564,7 @@
   const KNOCK_MIN_DB = 8;  // גובה מזערי של דפיקה מעל הרקע (בליטות קטנות של הרקע לא נספרות)
   const KNOCK_PROM_DB = 6; // בליטות השיא מעל מה שלפניו
   const DRAG_MIN_SEC = 0.5; // רעש רציף: לפחות חצי שנייה (נשימה: 0.3)
-  function classify(samples, sr) {
+  function classify(samples, sr, opts) {
     const factor = Math.max(1, Math.round(sr / 8000)); const r = sr / factor;
     const n = Math.floor(samples.length / factor);
     const empty = { kind: 'unknown', loudSec: 0, voicedFrac: 0, crestDb: 0, pitchVar: 0, onsets: 0, knocks: 0, floorDb: -100, segments: [] };
@@ -666,7 +666,9 @@
     if (lags.length >= 5) { const m = lags.reduce((a, b) => a + b, 0) / lags.length; const v = lags.reduce((a, b) => a + (b - m) * (b - m), 0) / lags.length; pitchVar = Math.sqrt(v) / m; }
     const onsets = rawOnsets;
     const kind = voicedFrac >= 0.35 && loudSec >= 0.4 && pitchVar >= 0.06 && onsets >= 2 ? 'speech' : kindFromSegments(segments);
-    return { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets, knocks, broadband: segments.filter((g) => g.broadband).length, floorDb, segments };
+    const out = { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets, knocks, broadband: segments.filter((g) => g.broadband).length, floorDb, segments };
+    if (opts && opts.envelope) { out.envelopeStepMs = ms(1); out.envelope = Array.from(E, (v) => Math.round(v * 10) / 10); } // dB מעל הרקע, כל 10ms
+    return out;
   }
   // סוג האירוע לפי המקטעים שנמצאו בו (בלי דיבור, שנמדד על כל הקליפ)
   function kindFromSegments(segments) {
@@ -700,6 +702,17 @@
     }
     list.forEach((e, i) => { e.rhythmic = flagged.has(i); });
     return flagged.size;
+  }
+
+  // ---------- המרת קצב דגימה ----------
+  // מסנן 4 קטבים מעט מתחת לחצי קצב היעד, ואז אינטרפולציה לינארית. מספיק לניתוח (המסווג עובד ב-8 kHz ממילא).
+  function resample(samples, sr, outRate) {
+    if (sr === outRate) return Float32Array.from(samples);
+    let x = samples;
+    if (outRate < sr) { const fc = outRate * 0.42; x = new Biquad('lowpass', fc, sr).run(samples); new Biquad('lowpass', fc, sr).run(x, x); }
+    const n = Math.max(1, Math.round((samples.length * outRate) / sr)), out = new Float32Array(n), step = sr / outRate;
+    for (let i = 0; i < n; i++) { const p = i * step, k = Math.floor(p), t = p - k; const a = x[Math.min(k, x.length - 1)], b = x[Math.min(k + 1, x.length - 1)]; out[i] = a + (b - a) * t; }
+    return out;
   }
 
   // ---------- איחוד אירועים צמודים ----------
@@ -761,5 +774,5 @@
     return c;
   }
 
-  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, kindFromSegments, markRhythmic, mergeAdjacent, mergedKind, keepsApart, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
+  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, kindFromSegments, markRhythmic, mergeAdjacent, mergedKind, keepsApart, resample, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
 })(typeof self !== 'undefined' ? self : globalThis);
