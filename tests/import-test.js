@@ -53,8 +53,9 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     info.rows = await page.$$eval('#impReviewList li.rev', (els) => els.length);
     if (opts.play !== false) {
       await page.click('#impReviewList li.rev:first-child button[data-act="play"]');
-      await page.waitForSelector('#impReviewList li.rev:first-child .player audio', { timeout: 20000 });
+      await page.waitForSelector('#impReviewList li.rev:first-child .player audio', { state: 'attached', timeout: 20000 });
       info.played = await page.$eval('#impReviewList li.rev:first-child .player audio', (a) => a.src.startsWith('blob:'));
+      info.wave = await page.$eval('#impReviewList li.rev:first-child .player canvas.wave', (c) => c.width > 0 && c.height > 0);
     }
     if (opts.clickNoSpeech) await page.click('#impSelNoSpeech');
     for (const i of opts.deselect || []) await page.click(`#impReviewList li.rev:nth-child(${i + 1}) input[data-act="sel"]`);
@@ -75,7 +76,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     assert(r.detected.length === 3 + (expectedKinds && expectedKinds.length > 3 ? 1 : 0) || r.detected.length === (expectedKinds ? expectedKinds.length : 3), `${label}: ${r.detected.length} events detected – ${r.count}`);
     assert(r.rows === r.review.length && r.rows === r.detected.length, `${label}: review list shows ${r.rows} rows`);
     if (expectedKinds) assert(JSON.stringify(r.review.map((x) => x.kind)) === JSON.stringify(expectedKinds), `${label}: kinds ${r.review.map((x) => x.kind).join('/')} (expected ${expectedKinds.join('/')})`);
-    if (r.played !== undefined) assert(r.played === true, `${label}: play button produced an audio player`);
+    if (r.played !== undefined) assert(r.played === true && r.wave === true, `${label}: play button produced a waveform player with audio`);
     assert(r.saved.length === expected.length, `${label}: ${r.saved.length} events saved (expected ${expected.length})`);
     if (r.saved.length !== expected.length) return;
     const offs = r.saved.map((e) => (e.noiseTs - startMs) / 1000);

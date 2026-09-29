@@ -70,6 +70,10 @@
   .ev-actions { display: flex; gap: 8px; margin: 8px 0; }
   .note { width: 100%; background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: .95rem; }
   .player { margin-top: 8px; } .player audio { width: 100%; }
+  .wave { display: block; width: 100%; height: 72px; background: #0b1220; border-radius: 8px; cursor: pointer; touch-action: manipulation; }
+  .player-bar { display: flex; align-items: center; gap: 12px; margin-top: 6px; font-size: .85rem; color: var(--muted); flex-wrap: wrap; }
+  .player-bar .time { font-variant-numeric: tabular-nums; }
+  .player-bar .legend { display: flex; gap: 10px; } .player-bar .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-inline-end: 4px; vertical-align: -1px; }
   .empty { color: var(--muted); padding: 10px 0; }
 
   #log { max-height: 220px; overflow: auto; font-size: .82rem; background: #0b1220; border-radius: 8px; padding: 8px; }
@@ -85,6 +89,7 @@
   .tag.file { background: #1e3a5f; color: #bae6fd; }
   .tag.kind-bang { background: #3f3f46; color: #e4e4e7; }
   .tag.kind-noise { background: #3f3f46; color: #e4e4e7; }
+  .tag.kind-handling { background: #4c1d2e; color: #fda4af; }
   .tag.kind-speech { background: #78350f; color: #fde68a; }
   .tag.kind-bangdrag { background: #3f3f46; color: #e4e4e7; }
   .tag.kind-breath { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
