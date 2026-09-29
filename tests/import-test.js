@@ -16,7 +16,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
 (async () => {
   const server = await startServer(8766);
   const browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: { width: 420, height: 900 }, locale: 'he-IL', timezoneId: 'Asia/Jerusalem' });
+  const context = await browser.newContext({ viewport: { width: 420, height: 900 }, locale: 'he-IL', timezoneId: 'Asia/Jerusalem', acceptDownloads: true });
   const page = await context.newPage();
   page.on('pageerror', (e) => { fails++; console.error('PAGE ERROR', e.message); });
   page.on('console', (m) => { if (m.type() === 'error') console.error('CONSOLE', m.text()); });
@@ -168,6 +168,24 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     const saved = await page.evaluate((n) => window.__noiseLog.events.slice(n).map((e) => ({ t: (e.noiseTs - Date.UTC(2026, 8, 27, 23, 0, 0)) / 1000, kind: e.kind })), before);
     assert(saved.length === 2 && Math.abs(saved[0].t - 20) < 0.2 && Math.abs(saved[1].t - 40) < 0.2 && saved[0].kind === 'bang', `breath: saved bang@02:00:20 and drag@02:00:40 (${JSON.stringify(saved)})`);
     // סינון ברשימת האירועים
+    // תיוג ידני ("מה זה באמת?") ברשימת האירועים, כולל "אחר" עם טקסט, ייצוא לניתוח והרצת eval-samples על הערכה
+    {
+      const li = '#events li.event';
+      await page.selectOption(`${li}:nth-child(1) select.label`, 'drag'); // האחרון שנשמר: הגרירה בשנייה 40
+      await page.selectOption(`${li}:nth-child(2) select.label`, 'other');
+      assert(await page.$eval(`${li}:nth-child(2) input.label-text`, (el) => !el.hidden), 'label: "other" reveals the free-text field');
+      await page.fill(`${li}:nth-child(2) input.label-text`, 'מגירה שנסגרה'); await page.dispatchEvent(`${li}:nth-child(2) input.label-text`, 'change');
+      const labels = await page.evaluate(() => window.__noiseLog.events.map((e) => `${e.label}${e.labelText ? ':' + e.labelText : ''}`));
+      assert(labels.includes('drag') && labels.includes('other:מגירה שנסגרה'), `label: stored on the events (${labels.join(' | ')})`);
+      const csv = await page.evaluate(() => window.__noiseLog.eventsCsv(window.__noiseLog.events));
+      assert(csv.includes('תיוג ידני') && csv.includes('אחר: מגירה שנסגרה') && csv.includes(',גרירה,'), 'label: CSV has the manual-label column');
+      const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#analysisBtn')]);
+      const zipPath = path.join(outDir, 'samples.zip'); await dl.saveAs(zipPath);
+      assert(/^noise-samples_.*\.zip$/.test(dl.suggestedFilename()) && fs.statSync(zipPath).size > 20000, `analysis export: ${dl.suggestedFilename()} (${fs.statSync(zipPath).size} bytes)`);
+      const { spawnSync } = require('child_process');
+      const r = spawnSync('node', [path.join(__dirname, 'eval-samples.js'), zipPath], { encoding: 'utf8' });
+      assert(r.status === 0 && /2 קליפים/.test(r.stdout) && /drag\s+1 קליפים, 1\/1/.test(r.stdout), `eval-samples: reads the bundle and agrees with the labels (exit ${r.status})\n${r.stdout.trim().split('\n').slice(-4).join('\n')}`);
+    }
     await page.click('#kindFilter button[data-kind="bang"]');
     const shownNoBang = await page.$$eval('#events li.event', (els) => els.length);
     const total = await page.evaluate(() => window.__noiseLog.events.length);

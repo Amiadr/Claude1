@@ -254,10 +254,10 @@
   // ---------- CSV ----------
   function csvCell(v) { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
   function eventsCsv(list) {
-    const head = ['#', 'תאריך', 'שעת תחילת הרעש', 'תחילת הקליפ', 'סיום הקליפ', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'קליפ קטוע', 'סיווג אוטומטי', 'הערה', 'קובץ', 'מקור', 'היסט בהקלטה המקורית', 'מכשיר', 'Drive'];
+    const head = ['#', 'תאריך', 'שעת תחילת הרעש', 'תחילת הקליפ', 'סיום הקליפ', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'קליפ קטוע', 'סיווג אוטומטי', 'תיוג ידני', 'הערה', 'קובץ', 'מקור', 'היסט בהקלטה המקורית', 'מכשיר', 'Drive'];
     const rows = list.slice().sort((a, b) => a.noiseTs - b.noiseTs).map((e) => [
       e.id, fmtDate(e.noiseTs), fmtTimeMs(e.noiseTs), fmtTime(e.startTs), fmtTime(e.endTs),
-      e.durationSec.toFixed(1), disp(e.peakDb).toFixed(1), disp(e.avgDb).toFixed(1), e.truncated ? 'כן' : '', KIND_LABEL[e.kind] || '', e.note || '', fileName(e),
+      e.durationSec.toFixed(1), disp(e.peakDb).toFixed(1), disp(e.avgDb).toFixed(1), e.truncated ? 'כן' : '', KIND_LABEL[e.kind] || '', labelText(e), e.note || '', fileName(e),
       e.source === 'file' ? e.sourceName : 'מיקרופון', e.source === 'file' ? fmtHms(e.offsetSec) : '', e.deviceName || '', e.driveFileId ? (e.remote ? 'מ-Drive' : 'הועלה') : '']);
     return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
@@ -484,6 +484,22 @@
   const selectedIds = new Set();
   const KIND_LABEL = { bang: 'דפיקה', bangdrag: 'דפיקה + גרירה', handling: 'ליד המכשיר', noise: 'רעש רציף', breath: 'נשימה', speech: 'ייתכן דיבור', unknown: 'לא ידוע' };
   const KIND_ORDER = ['bang', 'bangdrag', 'handling', 'noise', 'breath', 'speech', 'unknown'];
+  // תיוג ידני "מה זה באמת?": האמת לצד הסיווג האוטומטי, כדי לאסוף דוגמאות לכיול המסווג (ייצוא לניתוח)
+  const LABELS = { wall: 'דפיקה על הקיר', drag: 'גרירה', chair: 'כיסא', breath: 'נשימה', speech: 'דיבור', handling: 'טיפול בטלפון', background: 'רעש רקע', other: 'אחר' };
+  // אילו סיווגים אוטומטיים נחשבים נכונים לכל תיוג (משמש גם את tests/eval-samples.js)
+  const LABEL_EXPECT = { wall: ['bang', 'bangdrag'], drag: ['noise', 'bangdrag'], chair: ['bang', 'bangdrag'], breath: ['breath'], speech: ['speech'], handling: ['handling'], background: ['noise'], other: [] };
+  function labelText(e) { return e.label ? (e.label === 'other' ? `אחר: ${e.labelText || ''}`.trim() : LABELS[e.label] || e.label) : ''; }
+  function labelControl(e) {
+    const opts = Object.entries(LABELS).map(([k, v]) => `<option value="${k}" ${e.label === k ? 'selected' : ''}>${v}</option>`).join('');
+    return `<span class="label-box"><select class="label" data-act="label" title="תיוג ידני: מה זה באמת? נשמר לצד הסיווג האוטומטי ומיוצא לניתוח"><option value="">מה זה באמת?</option>${opts}</select><input class="label-text" data-act="labelText" placeholder="מה זה? (אם זיהית)" value="${escapeHtml(e.labelText || '')}" ${e.label === 'other' ? '' : 'hidden'}></span>`;
+  }
+  // שינוי בפקד התיוג: מחזיר true אם טופל. onChange(field, value) מקבל 'label' או 'labelText'
+  function handleLabelChange(target, item) {
+    const sel = target.closest('select[data-act="label"]'), txt = target.closest('input[data-act="labelText"]');
+    if (sel) { item.label = sel.value; const box = sel.closest('.label-box').querySelector('.label-text'); box.hidden = sel.value !== 'other'; if (sel.value === 'other') box.focus(); return true; }
+    if (txt) { item.labelText = txt.value.trim(); return true; }
+    return false;
+  }
   const KIND_HINT = { handling: 'נקישות או שפשוף עם תדרים גבוהים, כמו טיפול בטלפון או חפץ שנופל בחדר. רעש דרך הקיר מגיע כמעט בלי תדרים כאלה' };
   kindFilter = new Set(KIND_ORDER);
   function segText(cls) {
@@ -597,6 +613,7 @@
           <button class="btn small danger" data-act="delete">🗑</button>
         </div>
         <input class="note" data-act="note" placeholder="הערה: דפיקות / גרירה / הפלה…" value="${escapeHtml(e.note || '')}">
+        ${labelControl(e)}
         <div class="player" hidden></div>`;
       ul.appendChild(li);
     }
@@ -653,10 +670,12 @@
   $('#events').addEventListener('change', async (e) => {
     const sel = e.target.closest('input[data-act="sel"]');
     if (sel) { const id = Number(sel.closest('li.event').dataset.id); if (sel.checked) selectedIds.add(id); else selectedIds.delete(id); renderBulkBar(); return; }
-    const inp = e.target.closest('input[data-act="note"]'); if (!inp) return;
-    const id = Number(inp.closest('li.event').dataset.id);
-    const ev = events.find((x) => x.id === id); if (!ev) return;
-    ev.note = inp.value.trim(); ev.updatedAt = Date.now();
+    const li = e.target.closest('li.event'); if (!li) return;
+    const ev = events.find((x) => x.id === Number(li.dataset.id)); if (!ev) return;
+    const inp = e.target.closest('input[data-act="note"]');
+    if (inp) ev.note = inp.value.trim();
+    else if (!handleLabelChange(e.target, ev)) return;
+    ev.updatedAt = Date.now();
     await dbPut('events', ev);
   });
 
@@ -701,6 +720,39 @@
     } catch (e) {
       alert('הייצוא נכשל: ' + e.message);
     } finally { btn.disabled = false; btn.textContent = 'ייצוא ZIP (קליפים + CSV + יומן)'; }
+  }
+  // ---------- ייצוא לניתוח: קליפים מתויגים ב-8 kHz + labels.json ----------
+  // ערכה קטנה שאפשר לשלוח לניתוח וכיול המסווג: הקליפים המסומנים (או כל המתויגים), מומרים ל-8 kHz מונו
+  // (המסווג עובד ב-8 kHz ממילא; 10 שניות = 160 KB), ולצידם מה האפליקציה אמרה ומה המשתמש אמר.
+  const ANALYSIS_RATE = 8000;
+  async function exportForAnalysis() {
+    let list = selectedIds.size ? events.filter((e) => selectedIds.has(e.id)) : filteredEvents().filter((e) => e.label);
+    list = list.slice().sort((a, b) => a.noiseTs - b.noiseTs);
+    if (!list.length) { alert('אין מה לייצא. סמן אירועים (תיבת הסימון), או תייג אירועים ב"מה זה באמת?" והייצוא ייקח את כל המתויגים.'); return; }
+    const btn = $('#analysisBtn'); btn.disabled = true; btn.textContent = 'אורז…';
+    try {
+      const dev = deviceInfo(); const clips = [], files = [];
+      for (let i = 0; i < list.length; i++) {
+        const e = list[i]; btn.textContent = `אורז ${i + 1}/${list.length}…`;
+        let blob; try { blob = await ensureBlob(e); } catch (err) { log('שגיאה', `ייצוא לניתוח: לא ניתן להוריד קליפ מ-Drive (${fmtTime(e.noiseTs)}): ${err.message}`); continue; }
+        const { samples, sampleRate } = await wavSamples(blob);
+        const small = NoiseScan.resample(samples, sampleRate, ANALYSIS_RATE);
+        let auto = null; try { auto = NoiseScan.classify(small, ANALYSIS_RATE, { envelope: true }); } catch (err) { /* ignore */ }
+        const file = `clips/${fmtStamp(e.noiseTs)}_${e.label || 'unlabeled'}_${String(e.uid || e.id).slice(0, 6)}.wav`;
+        files.push({ name: file, data: encodeWav(small, ANALYSIS_RATE), date: new Date(e.noiseTs) });
+        clips.push({ file, id: e.id, uid: e.uid, noiseTime: new Date(e.noiseTs).toISOString(), noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, noiseSec: Math.round((e.noiseTs - e.startTs) / 10) / 100,
+          peakDb: Math.round(disp(e.peakDb) * 10) / 10, avgDb: Math.round(disp(e.avgDb) * 10) / 10, truncated: !!e.truncated, merged: e.merged || 1, rhythmic: !!e.rhythmic, source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0, originalSampleRate: sampleRate,
+          kind: e.kind || '', label: e.label || '', labelText: e.labelText || '', note: e.note || '', auto });
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      const meta = { app: 'noise-log', version: 2, exportedAt: new Date().toISOString(), sampleRate: ANALYSIS_RATE, device: dev.deviceName, settings: { liveThreshold: settings.threshold, pre: settings.pre, tail: settings.tail, maxClip: settings.maxClip, detectBand: settings.detectBand }, labels: LABELS, expect: LABEL_EXPECT, clips };
+      files.unshift({ name: 'labels.json', data: new TextEncoder().encode(JSON.stringify(meta, null, 1)) });
+      files.unshift({ name: 'README.txt', data: new TextEncoder().encode(['ערכה לניתוח וכיול המסווג של יומן הרעש.', `${clips.length} קליפים ב-${ANALYSIS_RATE} Hz מונו (clips/), ו-labels.json עם הסיווג האוטומטי (auto: סוג, דפיקות, מקטעים, מעטפת ב-10ms), התיוג הידני (label, labelText) וההערה לכל קליפ.`, 'הרצה: node tests/eval-samples.js <הקובץ הזה>', ''].join('\n')) });
+      const zip = await makeZip(files);
+      downloadBlob(zip, `noise-samples_${fmtStamp(Date.now())}.zip`);
+      log('מידע', `יוצאה ערכה לניתוח: ${clips.length} קליפים, ${fmtBytes(zip.size)}`);
+    } catch (e) { alert('הייצוא נכשל: ' + e.message); }
+    finally { btn.disabled = false; btn.textContent = 'ייצוא לניתוח (מתויגים / מסומנים)'; }
   }
   function readmeText(list) {
     return [
@@ -994,6 +1046,7 @@
           <span class="ev-meta">שיא <b>${disp(r.peakDb).toFixed(0)}</b> · ${fmtDur(r.endSec - r.startSec)} ${kindTag(r.kind, [r.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '', segText(r.cls)].filter(Boolean).join('. '))}${r.truncated ? '<span class="tag">קטוע</span>' : ''}${r.merged > 1 ? `<span class="tag" title="כמה רעשים ברצף שאוחדו לאירוע אחד">אוחד מ-${r.merged}</span>` : ''}</span>
         </label>
         <button class="btn small" data-act="play" title="האזן">▶</button>
+        <div class="rev-label">${labelControl(r)}</div>
         <div class="player" hidden></div>`;
       ul.appendChild(li);
     }
@@ -1031,7 +1084,7 @@
     const saveOne = async (e, samples, sampleRate) => {
       const rec = {
         startTs: Math.round(startMs + e.startSec * 1000), noiseTs: Math.round(startMs + e.noiseSec * 1000), endTs: Math.round(startMs + e.endSec * 1000),
-        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind, rhythmic: !!e.rhythmic, merged: e.merged || 1,
+        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind, rhythmic: !!e.rhythmic, merged: e.merged || 1, label: e.label || '', labelText: e.labelText || '',
         sessionId: importId, source: 'file', sourceName: imp.file.name, offsetSec: e.noiseSec, blob: encodeWav(samples, sampleRate),
         uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       };
@@ -1132,8 +1185,11 @@
     $$('input[name="impMode"]').forEach((r) => r.addEventListener('change', () => { if (imp) imp.startManual = true; onImportTimeChanged(); }));
     bindFixUi();
     $('#impReviewList').addEventListener('change', (e) => {
-      const cb = e.target.closest('input[data-act="sel"]'); if (!cb || !imp || !imp.review) return;
-      const li = cb.closest('li.rev'); const r = imp.review[Number(li.dataset.i)]; r.selected = cb.checked; li.classList.toggle('off', !cb.checked); updateReviewSummary();
+      if (!imp || !imp.review) return;
+      const li = e.target.closest('li.rev'); if (!li) return; const r = imp.review[Number(li.dataset.i)];
+      const cb = e.target.closest('input[data-act="sel"]');
+      if (cb) { r.selected = cb.checked; li.classList.toggle('off', !cb.checked); updateReviewSummary(); return; }
+      handleLabelChange(e.target, r);
     });
     $('#impReviewList').addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-act="play"]'); if (!btn || !imp || !imp.review) return;
@@ -1226,13 +1282,13 @@
   function driveClipName(e, dev) { return `${fmtStamp(e.noiseTs)}_${sanitizeName(e.deviceName || dev.deviceName) || 'device'}_${String(e.uid).slice(0, 6)}.wav`; }
   function indexEntryOf(e) {
     return { uid: e.uid, noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate: e.sampleRate, truncated: !!e.truncated,
-      kind: e.kind || '', note: e.note || '', source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0,
+      kind: e.kind || '', note: e.note || '', label: e.label || '', labelText: e.labelText || '', source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0,
       deviceId: e.deviceId || '', deviceName: e.deviceName || '', fileId: e.driveFileId || '', fileName: e.driveFileName || '', updatedAt: e.updatedAt || 0,
       timeCorrected: !!e.timeCorrected, originalNoiseTs: e.originalNoiseTs };
   }
   function indexCsv(list) {
-    const head = ['תאריך', 'שעת תחילת הרעש', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'סיווג אוטומטי', 'הערה', 'מקור', 'היסט בהקלטה המקורית', 'מכשיר', 'קובץ ב-Drive'];
-    const rows = list.map((x) => [fmtDate(x.noiseTs), fmtTimeMs(x.noiseTs), (x.durationSec || 0).toFixed(1), disp(x.peakDb).toFixed(1), disp(x.avgDb).toFixed(1), KIND_LABEL[x.kind] || '', x.note || '', x.source === 'file' ? x.sourceName : 'מיקרופון', x.source === 'file' ? fmtHms(x.offsetSec) : '', x.deviceName || '', x.fileName || '']);
+    const head = ['תאריך', 'שעת תחילת הרעש', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'סיווג אוטומטי', 'תיוג ידני', 'הערה', 'מקור', 'היסט בהקלטה המקורית', 'מכשיר', 'קובץ ב-Drive'];
+    const rows = list.map((x) => [fmtDate(x.noiseTs), fmtTimeMs(x.noiseTs), (x.durationSec || 0).toFixed(1), disp(x.peakDb).toFixed(1), disp(x.avgDb).toFixed(1), KIND_LABEL[x.kind] || '', labelText(x), x.note || '', x.source === 'file' ? x.sourceName : 'מיקרופון', x.source === 'file' ? fmtHms(x.offsetSec) : '', x.deviceName || '', x.fileName || '']);
     return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
   async function syncDrive() {
@@ -1294,7 +1350,7 @@
           if (!cur) { if (!e.remote) { byUid.set(e.uid, indexEntryOf(e)); changed = true; } }
           else if (!e.remote && (e.updatedAt || 0) > (cur.updatedAt || 0)) { byUid.set(e.uid, Object.assign({}, cur, indexEntryOf(e))); changed = true; }
           else if (e.remote && (cur.updatedAt || 0) > (e.updatedAt || 0)) {
-            Object.assign(e, { note: cur.note || '', kind: cur.kind || e.kind, noiseTs: cur.noiseTs, startTs: cur.startTs, endTs: cur.endTs, driveFileName: cur.fileName || e.driveFileName, timeCorrected: !!cur.timeCorrected, originalNoiseTs: cur.originalNoiseTs, updatedAt: cur.updatedAt });
+            Object.assign(e, { note: cur.note || '', label: cur.label || '', labelText: cur.labelText || '', kind: cur.kind || e.kind, noiseTs: cur.noiseTs, startTs: cur.startTs, endTs: cur.endTs, driveFileName: cur.fileName || e.driveFileName, timeCorrected: !!cur.timeCorrected, originalNoiseTs: cur.originalNoiseTs, updatedAt: cur.updatedAt });
             await dbPut('events', e);
           }
         }
@@ -1386,6 +1442,7 @@
     $('#bulkClear').addEventListener('click', () => { selectedIds.clear(); renderEvents(); });
     $('#csvBtn').addEventListener('click', exportCsv);
     $('#zipBtn').addEventListener('click', exportZip);
+    $('#analysisBtn').addEventListener('click', exportForAnalysis);
     $('#clearBtn').addEventListener('click', async () => {
       if (!confirm('למחוק את כל האירועים והיומן מהמכשיר? פעולה זו אינה הפיכה. ודא שייצאת ZIP קודם.')) return;
       await dbClear('events'); await dbClear('log'); await dbClear('scans');
@@ -1418,7 +1475,7 @@
   }
 
   // חשיפה לבדיקות אוטומטיות
-  window.__noiseLog = { get events() { return events; }, get monitoring() { return monitoring; }, get importState() { return imp; }, settings, eventsCsv, makeZip, dbGetAll, Detector, disp, syncDrive, drive, get syncing() { return syncing; }, importBatches };
+  window.__noiseLog = { get events() { return events; }, get monitoring() { return monitoring; }, get importState() { return imp; }, settings, eventsCsv, makeZip, dbGetAll, Detector, disp, syncDrive, drive, get syncing() { return syncing; }, importBatches, exportForAnalysis, LABELS, LABEL_EXPECT };
 
   init();
 })();

@@ -178,6 +178,11 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     const chd = NS.classify(handling, sr);
     assert(chd.kind === 'handling' && chd.broadband === 3 && chd.knocks === 6, `classify: LF knocks + broadband clicks → ${chd.kind} (${chd.broadband} broadband of ${chd.knocks})`);
     assert(NS.classify(knocks, sr).broadband === 0 && NS.classify(mixed, sr).broadband === 0, 'classify: wall knocks and chair have no broadband segments');
+    // המרה ל-8 kHz לייצוא לניתוח: שומרת רמה, והסיווג על הקליפ המוקטן זהה
+    { const small = NS.resample(mixed, sr, 8000); let a = 0, b = 0; for (const v of mixed) a += v * v; for (const v of small) b += v * v;
+      assert(small.length === mixed.length / 2 && Math.abs(10 * Math.log10((b / small.length) / (a / mixed.length))) < 1, `resample: 16k → 8k keeps length ratio and level (${(10 * Math.log10((b / small.length) / (a / mixed.length))).toFixed(2)} dB)`);
+      const cs = NS.classify(small, 8000, { envelope: true });
+      assert(cs.kind === 'bang' && cs.knocks === 4 && cs.envelope.length > 800 && cs.envelopeStepMs === 10 && Math.max(...cs.envelope) > 40, `resample: classification of the 8 kHz clip unchanged (${cs.kind}, ${cs.knocks} knocks), envelope exported (${cs.envelope.length} × ${cs.envelopeStepMs}ms)`); }
     // איחוד אירועים צמודים אחרי הסיווג
     const ev = (startSec, endSec, kind, extra) => Object.assign({ startSec, noiseSec: startSec + 2, endSec, peakDb: -40, avgDb: -55, truncated: false, kind, selected: true, cls: { kind, segments: [{ kind: kind === 'noise' ? 'drag' : 'bang', sec: 2, dur: 0.3 }], loudSec: 0.3, knocks: kind === 'noise' ? 0 : 1 } }, extra || {});
     const rev = [ev(10, 16, 'bang', { peakDb: -30 }), ev(16, 20.5, 'bang'), ev(20.5, 24, 'noise'), ev(30, 36, 'noise'), ev(36, 40, 'breath'), ev(40, 44, 'noise'), ev(44, 48, 'noise', { rhythmic: true }), ev(48, 52, 'speech')];
