@@ -104,7 +104,7 @@
       // אירוע שהסתיים מחכה pre שניות לפני שהוא נמסר: אם רעש חדש מתחיל בינתיים, הקליפים צמודים והם אפיזודה אחת
       // (סדרת דפיקות, דפיקה ואז גרירה) ומתאחדים לאירוע אחד, כמו בייבוא. נשימות ודיבור לא מתאחדים.
       this.held = null;
-      this.classifier = window.NoiseScan ? (samples) => { try { return NoiseScan.classify(samples, sampleRate).kind; } catch (e) { return 'unknown'; } } : () => 'unknown';
+      this.classifier = window.NoiseScan ? (samples) => { try { return NoiseScan.classify(samples, sampleRate); } catch (e) { return { kind: 'unknown', segments: [] }; } } : () => ({ kind: 'unknown', segments: [] });
     }
     push(samples, wall) {
       let sumSq = 0;
@@ -175,7 +175,7 @@
         avgDb: 20 * Math.log10(Math.max(Math.sqrt(ev.sumSq / ev.n), 1e-6)),
         sampleRate: this.sr, samples: out, truncated, merged: 1,
       };
-      e.kind = this.classifier(out);
+      e.cls = this.classifier(out); e.kind = e.cls.kind;
       const held = this.held; this.held = null;
       if (held) {
         // האירוע הזה התחיל בתוך pre שניות מסוף המוחזק (אחרת המוחזק כבר היה נמסר), והקליפים צמודים
@@ -189,9 +189,10 @@
       const samples = new Float32Array(a.samples.length + b.samples.length); samples.set(a.samples, 0); samples.set(b.samples, a.samples.length);
       const n = samples.length, sumSq = a.sumSq + b.sumSq;
       const kind = window.NoiseScan ? NoiseScan.mergedKind(a, b) : (a.kind || b.kind);
-      return Object.assign({}, a, { endTs: b.endTs, durationSec: n / this.sr, peakDb: Math.max(a.peakDb, b.peakDb), sumSq, avgDb: 20 * Math.log10(Math.max(Math.sqrt(sumSq / n), 1e-6)), samples, truncated: b.truncated, kind, merged: (a.merged || 1) + (b.merged || 1) });
+      const segments = [...((a.cls && a.cls.segments) || []), ...((b.cls && b.cls.segments) || []).map((g) => Object.assign({}, g, { sec: g.sec + a.durationSec }))];
+      return Object.assign({}, a, { endTs: b.endTs, durationSec: n / this.sr, peakDb: Math.max(a.peakDb, b.peakDb), sumSq, avgDb: 20 * Math.log10(Math.max(Math.sqrt(sumSq / n), 1e-6)), samples, truncated: b.truncated, kind, cls: { kind, segments }, merged: (a.merged || 1) + (b.merged || 1) });
     }
-    emit(e) { this.held = null; delete e.sumSq; this.onEvent(e); }
+    emit(e) { this.held = null; delete e.sumSq; delete e.cls; this.onEvent(e); }
     flush() { if (this.active) this.finish(this.active, true); if (this.held) this.emit(this.held); }
   }
 
@@ -481,14 +482,16 @@
     currentFilter = sel.value;
   }
   const selectedIds = new Set();
-  const KIND_LABEL = { bang: 'דפיקה', bangdrag: 'דפיקה + גרירה', noise: 'רעש רציף', breath: 'נשימה', speech: 'ייתכן דיבור', unknown: 'לא ידוע' };
-  const KIND_ORDER = ['bang', 'bangdrag', 'noise', 'breath', 'speech', 'unknown'];
+  const KIND_LABEL = { bang: 'דפיקה', bangdrag: 'דפיקה + גרירה', handling: 'ליד המכשיר', noise: 'רעש רציף', breath: 'נשימה', speech: 'ייתכן דיבור', unknown: 'לא ידוע' };
+  const KIND_ORDER = ['bang', 'bangdrag', 'handling', 'noise', 'breath', 'speech', 'unknown'];
+  const KIND_HINT = { handling: 'נקישות או שפשוף עם תדרים גבוהים, כמו טיפול בטלפון או חפץ שנופל בחדר. רעש דרך הקיר מגיע כמעט בלי תדרים כאלה' };
   kindFilter = new Set(KIND_ORDER);
   function segText(cls) {
     if (!cls || !cls.segments || !cls.segments.length) return '';
-    const knocks = cls.segments.filter((g) => g.kind === 'bang').length;
+    const knocks = cls.segments.filter((g) => g.kind === 'bang').length, broadband = cls.segments.filter((g) => g.broadband).length;
     const parts = knocks ? [knocks === 1 ? 'דפיקה' : `${knocks} דפיקות`] : [];
     for (const g of cls.segments) if (g.kind !== 'bang') parts.push(`${{ drag: 'רעש רציף', breath: 'נשימה' }[g.kind] || g.kind} ${g.dur} שנ׳`);
+    if (broadband) parts.push(`${broadband} עם תדרים גבוהים (ליד המכשיר, לא דרך הקיר)`);
     return 'מבנה: ' + parts.join(', ');
   }
   // ---------- נגן עם צורת הגל ----------
@@ -508,7 +511,7 @@
     for (let i = 0; i < frames; i++) { let v = 0; for (let c = 0; c < fmt.channels; c++) v += dv.getInt16(data.offset + (i * fmt.channels + c) * 2, true); out[i] = v / (32768 * fmt.channels); }
     return { samples: out, sampleRate: fmt.sampleRate };
   }
-  const SEG_COLOR = { bang: 'rgba(245,158,11,.35)', drag: 'rgba(167,139,250,.30)', breath: 'rgba(148,163,184,.25)' };
+  const SEG_COLOR = { bang: 'rgba(245,158,11,.35)', drag: 'rgba(167,139,250,.30)', breath: 'rgba(148,163,184,.25)', broadband: 'rgba(251,113,133,.40)' };
   function buildPlayer(container, { samples, sampleRate, blob, segments, noiseSec }) {
     const dur = samples.length / sampleRate;
     container.innerHTML = '';
@@ -520,6 +523,7 @@
     const marks = []; if (segments && segments.some((g) => g.kind === 'bang')) marks.push('<i style="background:rgba(245,158,11,.7)"></i>דפיקה');
     if (segments && segments.some((g) => g.kind === 'drag')) marks.push('<i style="background:rgba(167,139,250,.7)"></i>רעש רציף');
     if (segments && segments.some((g) => g.kind === 'breath')) marks.push('<i style="background:rgba(148,163,184,.7)"></i>נשימה');
+    if (segments && segments.some((g) => g.broadband)) marks.push('<i style="background:rgba(251,113,133,.8)"></i>ליד המכשיר');
     legend.innerHTML = marks.join(' ');
     const audio = document.createElement('audio'); audio.preload = 'auto'; audio.src = URL.createObjectURL(blob);
     bar.append(btn, time, legend); container.append(canvas, bar, audio);
@@ -535,7 +539,7 @@
     function draw() {
       ctx2.clearRect(0, 0, W, H);
       ctx2.fillStyle = '#0b1220'; ctx2.fillRect(0, 0, W, H);
-      for (const g of segments || []) { ctx2.fillStyle = SEG_COLOR[g.kind] || 'rgba(148,163,184,.2)'; const x0 = x(g.sec), w = Math.max(3, x(g.sec + g.dur) - x0); ctx2.fillRect(x0, 0, w, H); }
+      for (const g of segments || []) { ctx2.fillStyle = g.broadband ? SEG_COLOR.broadband : (SEG_COLOR[g.kind] || 'rgba(148,163,184,.2)'); const x0 = x(g.sec), w = Math.max(3, x(g.sec + g.dur) - x0); ctx2.fillRect(x0, 0, w, H); }
       ctx2.fillStyle = '#38bdf8';
       ctx2.beginPath(); ctx2.moveTo(0, H / 2);
       for (let c = 0; c < W; c++) ctx2.lineTo(c, H / 2 - (env[c] / maxE) * (H / 2 - 3));
@@ -556,7 +560,7 @@
     tick();
     return { audio, play: () => audio.play().catch(() => {}) };
   }
-  function kindTag(kind, extra) { return KIND_LABEL[kind] ? `<span class="tag kind-${kind}" title="סיווג אוטומטי לפי מאפייני הקול, עלול לטעות${extra ? '. ' + escapeHtml(extra) : ''}">${KIND_LABEL[kind]}${kind === 'breath' && extra && /מחזורי/.test(extra) ? '?' : ''}</span>` : ''; }
+  function kindTag(kind, extra) { return KIND_LABEL[kind] ? `<span class="tag kind-${kind}" title="סיווג אוטומטי לפי מבנה הרעש, עלול לטעות${KIND_HINT[kind] ? '. ' + KIND_HINT[kind] : ''}${extra ? '. ' + escapeHtml(extra) : ''}">${KIND_LABEL[kind]}${kind === 'breath' && extra && /מחזורי/.test(extra) ? '?' : ''}</span>` : ''; }
   function renderBulkBar() {
     const n = selectedIds.size; $('#bulkBar').hidden = !n; $('#bulkCount').textContent = n;
   }

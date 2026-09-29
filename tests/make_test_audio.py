@@ -35,6 +35,25 @@ def _highpass(sig, sr, fc=600.0):
     return out
 
 
+def _lowpass(sig, sr, fc=400.0):
+    """מסנן LPF (biquad מסדר 2, שני מעברים) ונרמול ל-RMS 1 – לגרירה: רעש שעובר דרך הרצפה כמעט בלי תדרים גבוהים."""
+    import math
+    w0 = 2 * math.pi * fc / sr
+    alpha = math.sin(w0) / (2 * math.sqrt(0.5))
+    cw = math.cos(w0)
+    b0, b1, b2 = (1 - cw) / 2, 1 - cw, (1 - cw) / 2
+    a0, a1, a2 = 1 + alpha, -2 * cw, 1 - alpha
+    out = sig
+    for _ in range(2):
+        src, out = out, np.zeros_like(sig)
+        x1 = x2 = y1 = y2 = 0.0
+        for i, v in enumerate(src):
+            y = (b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0
+            x2, x1, y2, y1 = x1, v, y1, y
+            out[i] = y
+    return out / max(float(np.sqrt(np.mean(out ** 2))), 1e-9)
+
+
 def make_breath_file(out, sr):
     rng = np.random.default_rng(99)
     n = int(60 * sr)
@@ -53,9 +72,9 @@ def make_breath_file(out, sr):
     # דפיקה דרך הקיר בשנייה 20: תדר נמוך, התקפה מהירה, דעיכה 0.6 שניות
     i0 = int(20 * sr); t = np.arange(int(0.6 * sr)) / sr
     sig[i0:i0 + len(t)] += 0.35 * (np.sin(2 * np.pi * 90 * t) + 0.5 * np.sin(2 * np.pi * 140 * t)) * np.exp(-7 * t) + 0.1 * rng.normal(0, 1, len(t)) * np.exp(-40 * t)
-    # גרירה בשנייה 40: רעש רחב עם תדרים נמוכים, 2 שניות
+    # גרירה בשנייה 40: רעש בתדרים נמוכים (דרך הרצפה), 2 שניות
     i0 = int(40 * sr); m = int(2 * sr)
-    sig[i0:i0 + m] += 0.06 * rng.normal(0, 1, m) + 0.05 * np.sin(2 * np.pi * 60 * np.arange(m) / sr) * (0.7 + 0.3 * rng.normal(0, 1, m))
+    sig[i0:i0 + m] += 0.06 * _lowpass(rng.normal(0, 1, m), sr) + 0.05 * np.sin(2 * np.pi * 60 * np.arange(m) / sr) * (0.7 + 0.3 * rng.normal(0, 1, m))
     pcm = (np.clip(sig, -1, 1) * 32767).astype(np.int16)
     with wave.open(out, "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm.tobytes())
@@ -81,7 +100,7 @@ def main():
         if kind == "bang":
             burst = np.sin(2 * np.pi * 120 * t) * np.exp(-t * 25) * 0.4 + rng.normal(0, 0.15, i1 - i0) * np.exp(-t * 30)
         else:
-            burst = rng.normal(0, 0.056, i1 - i0)  # ~ -25 dBFS RMS
+            burst = 0.056 * _lowpass(rng.normal(0, 1, i1 - i0), sr)  # ~ -25 dBFS RMS, תדרים נמוכים (דרך הרצפה)
         sig[i0:i1] += burst
     if args.with_speech:
         i0 = int(32.0 * sr)

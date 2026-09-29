@@ -554,8 +554,12 @@
   //   רעש רציף (גרירה, מנוע וכד') – רמה מוגבהת (6 dB ומעלה מעל הרקע) שנמשכת חצי שנייה ומעלה ואינה זנב של דפיקה
   //   נשימה  – רעש רציף בצורת גבעה: עלייה איטית ודעיכה איטית, 0.3–4 שניות, איוושה בתדרים גבוהים כמעט בלי תדרים נמוכים, לא קולי
   //   דיבור  – מחזוריות עם גובה צליל משתנה והברות (נמדד על כל הקליפ)
+  //   רעש ליד המכשיר – נקישות או שפשוף רחבי-פס (10% ומעלה מהאנרגיה מעל 1 kHz): טיפול בטלפון, חפץ שנופל בחדר.
+  //            דפיקה או גרירה דרך הקיר והרצפה מגיעות כמעט בלי תדרים גבוהים, ולכן זה מבדיל "דרך הקיר" מ"ליד המכשיר".
   // רקע: מה שנשאר מתחת ל-6 dB מעל רמת הרקע לא נספר בכלל, בלי קשר לעוצמה המוחלטת של הקליפ.
   // התוצאה היא רמז לסקירה, לא זיהוי ודאי.
+  const HIGH_BAND_HZ = 1000; // "רחב-פס": רעש עם אנרגיה מעל 1 kHz נוצר ליד המכשיר; מה שעובר דרך קיר או רצפה כמעט בלי תדרים כאלה
+  const BROADBAND = 0.1;     // חלק האנרגיה מעל 1 kHz שממנו מקטע נחשב רחב-פס
   const LOUD_DB = 6;       // מעל הרקע: מכאן "רועש"
   const KNOCK_MIN_DB = 8;  // גובה מזערי של דפיקה מעל הרקע (בליטות קטנות של הרקע לא נספרות)
   const KNOCK_PROM_DB = 6; // בליטות השיא מעל מה שלפניו
@@ -570,7 +574,7 @@
     for (let i = 0; i < n; i++) { let acc = 0; const o = i * factor; for (let k = 0; k < factor; k++) acc += samples[o + k]; x[i] = acc / factor; mean += x[i]; }
     mean /= n; for (let i = 0; i < n; i++) x[i] -= mean;
     const lo = new Biquad('lowpass', LOW_BAND_HZ, r).run(x); new Biquad('lowpass', LOW_BAND_HZ, r).run(lo, lo);
-    const hi = new Biquad('highpass', 2000, r).run(x); new Biquad('highpass', 2000, r).run(hi, hi);
+    const hi = new Biquad('highpass', HIGH_BAND_HZ, r).run(x); new Biquad('highpass', HIGH_BAND_HZ, r).run(hi, hi);
     const frame = Math.round(r * 0.03), hop = Math.round(r * 0.01); // חלון 30ms, צעד 10ms
     const nf = Math.max(0, Math.floor((n - frame) / hop) + 1);
     if (nf < 3) return empty;
@@ -604,7 +608,8 @@
       if (ms(f - a) > 100 || dropDb < 5) continue;
       knocks++;
       for (let k = Math.max(0, a - 5); k <= Math.min(nf - 1, b + 10); k++) knockMask[k] = 1;
-      segments.push(Object.assign({ kind: 'bang', sec: sec(a), dur: Math.max(0.05, Math.round((b - a + 1) * hop * 100 / r) / 100), heightDb: Math.round(H * 10) / 10, riseMs: ms(f - a), fallMs: ms(b - f), dropDb: Math.round(dropDb * 10) / 10 }, bandRatios(a, b)));
+      const bands = bandRatios(a, b);
+      segments.push(Object.assign({ kind: 'bang', sec: sec(a), dur: Math.max(0.05, Math.round((b - a + 1) * hop * 100 / r) / 100), heightDb: Math.round(H * 10) / 10, riseMs: ms(f - a), fallMs: ms(b - f), dropDb: Math.round(dropDb * 10) / 10, broadband: bands.hfRatio >= BROADBAND }, bands));
     }
 
     // --- קוליות (לדיבור), על הפריימים הרועשים ---
@@ -650,7 +655,7 @@
       const riseMs = ms(peakF - rg.a); const bands = bandRatios(rg.a, rg.b); const vFrac = segVoiced / len;
       const isBreath = dur <= 4 && riseMs >= 150 && humpDb >= 2 && bands.lfRatio < 0.2 && bands.hfRatio > 0.1 && vFrac < 0.3;
       if (!isBreath && dur < DRAG_MIN_SEC) continue; // רצף קצר של רקע מוגבה, לא גרירה
-      segments.push(Object.assign({ kind: isBreath ? 'breath' : 'drag', sec: sec(rg.a), dur: Math.round(dur * 100) / 100, heightDb: Math.round(E[peakF] * 10) / 10, riseMs, humpDb: Math.round(humpDb * 10) / 10 }, bands));
+      segments.push(Object.assign({ kind: isBreath ? 'breath' : 'drag', sec: sec(rg.a), dur: Math.round(dur * 100) / 100, heightDb: Math.round(E[peakF] * 10) / 10, riseMs, humpDb: Math.round(humpDb * 10) / 10, broadband: !isBreath && bands.hfRatio >= BROADBAND }, bands));
     }
     segments.sort((p, q) => p.sec - q.sec);
 
@@ -660,15 +665,20 @@
     let pitchVar = 0;
     if (lags.length >= 5) { const m = lags.reduce((a, b) => a + b, 0) / lags.length; const v = lags.reduce((a, b) => a + (b - m) * (b - m), 0) / lags.length; pitchVar = Math.sqrt(v) / m; }
     const onsets = rawOnsets;
-    const drags = segments.filter((g) => g.kind === 'drag').length, breaths = segments.filter((g) => g.kind === 'breath').length;
+    const kind = voicedFrac >= 0.35 && loudSec >= 0.4 && pitchVar >= 0.06 && onsets >= 2 ? 'speech' : kindFromSegments(segments);
+    return { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets, knocks, broadband: segments.filter((g) => g.broadband).length, floorDb, segments };
+  }
+  // סוג האירוע לפי המקטעים שנמצאו בו (בלי דיבור, שנמדד על כל הקליפ)
+  function kindFromSegments(segments) {
+    const knocks = segments.filter((g) => g.kind === 'bang').length, drags = segments.filter((g) => g.kind === 'drag').length, breaths = segments.filter((g) => g.kind === 'breath').length;
+    const broadband = segments.filter((g) => g.broadband).length;
     const breathSec = segments.filter((g) => g.kind === 'breath').reduce((a, g) => a + g.dur, 0), sustainedSec = segments.filter((g) => g.kind !== 'bang').reduce((a, g) => a + g.dur, 0);
-    let kind;
-    if (voicedFrac >= 0.35 && loudSec >= 0.4 && pitchVar >= 0.06 && onsets >= 2) kind = 'speech';
-    else if (knocks && drags) kind = 'bangdrag';
-    else if (knocks) kind = 'bang';
-    else if (breaths && breathSec >= 0.7 * sustainedSec) kind = 'breath';
-    else kind = 'noise';
-    return { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets, knocks, floorDb, segments };
+    // שני מקטעים רחבי-פס (או אחד כשאין כמעט מקטעים אחרים): הרעש נוצר ליד המכשיר, לא מעבר לקיר
+    if (broadband >= 2 || (broadband >= 1 && knocks + drags <= 2)) return 'handling';
+    if (knocks && drags) return 'bangdrag';
+    if (knocks) return 'bang';
+    if (breaths && breathSec >= 0.7 * sustainedSec) return 'breath';
+    return 'noise';
   }
 
   // ---------- רעש מחזורי (נשימות): רצף אירועים במרווחים קבועים ----------
@@ -679,7 +689,7 @@
     const W = 6;
     for (let k = 0; k + W <= items.length; k++) {
       const win = items.slice(k, k + W);
-      if (win.some((w) => w.dur > 12 || w.kind === 'bang' || w.kind === 'bangdrag' || w.kind === 'speech')) continue;
+      if (win.some((w) => w.dur > 12 || w.kind === 'bang' || w.kind === 'bangdrag' || w.kind === 'speech' || w.kind === 'handling')) continue;
       const peaks = win.map((w) => w.peak).filter((v) => typeof v === 'number');
       if (peaks.length && Math.max(...peaks) - Math.min(...peaks) > 10) continue; // רמות דומות, כמו נשימות; דפיקה חזקה באמצע שוברת את הרצף
       const iv = []; for (let j = 1; j < W; j++) iv.push(win[j].t - win[j - 1].t);
@@ -698,16 +708,18 @@
   // דפיקות ואז כיסא שנטרק. מאחדים אותם לאירוע אחד, חוץ מנשימות, דיבור ורעש מחזורי (שם ההפרדה היא המידע),
   // ובלי לעבור את אורך הקליפ המרבי. list: אירועי הסקירה אחרי הסיווג (startSec/endSec/kind/cls/rhythmic).
   function mergedKind(a, b) {
+    const segs = [...((a.cls && a.cls.segments) || []), ...((b.cls && b.cls.segments) || [])];
+    if (segs.length) return kindFromSegments(segs);
     const bangs = [a, b].filter((e) => e.kind === 'bang' || e.kind === 'bangdrag').length;
     const drags = [a, b].filter((e) => e.kind === 'noise' || e.kind === 'bangdrag').length;
-    return bangs && drags ? 'bangdrag' : bangs ? 'bang' : drags ? 'noise' : (a.kind || b.kind || 'unknown');
+    return [a, b].some((e) => e.kind === 'handling') ? 'handling' : bangs && drags ? 'bangdrag' : bangs ? 'bang' : drags ? 'noise' : (a.kind || b.kind || 'unknown');
   }
   function keepsApart(e) { return e.kind === 'breath' || e.kind === 'speech' || !!e.rhythmic; }
   function mergeTwo(a, b) {
     const da = a.endSec - a.startSec, db = b.endSec - b.startSec, kind = mergedKind(a, b);
     const shift = (g) => Object.assign({}, g, { sec: Math.round((g.sec + b.startSec - a.startSec) * 100) / 100 });
     const segments = [...((a.cls && a.cls.segments) || []), ...((b.cls && b.cls.segments) || []).map(shift)];
-    const cls = Object.assign({}, a.cls || {}, { kind, segments, loudSec: ((a.cls && a.cls.loudSec) || 0) + ((b.cls && b.cls.loudSec) || 0), knocks: ((a.cls && a.cls.knocks) || 0) + ((b.cls && b.cls.knocks) || 0) });
+    const cls = Object.assign({}, a.cls || {}, { kind, segments, loudSec: ((a.cls && a.cls.loudSec) || 0) + ((b.cls && b.cls.loudSec) || 0), knocks: ((a.cls && a.cls.knocks) || 0) + ((b.cls && b.cls.knocks) || 0), broadband: segments.filter((g) => g.broadband).length });
     const avgDb = 10 * Math.log10((da * Math.pow(10, a.avgDb / 10) + db * Math.pow(10, b.avgDb / 10)) / Math.max(da + db, 1e-9));
     return Object.assign({}, a, { endSec: b.endSec, peakDb: Math.max(a.peakDb, b.peakDb), avgDb, truncated: !!b.truncated, kind, cls, merged: (a.merged || 1) + (b.merged || 1), selected: a.selected !== false && b.selected !== false });
   }
@@ -749,5 +761,5 @@
     return c;
   }
 
-  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, markRhythmic, mergeAdjacent, mergedKind, keepsApart, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
+  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, kindFromSegments, markRhythmic, mergeAdjacent, mergedKind, keepsApart, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
 })(typeof self !== 'undefined' ? self : globalThis);

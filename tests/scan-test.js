@@ -110,7 +110,9 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     for (let i = 0; i < 0.15 * sr; i++) { const t = i / sr; bang[2 * sr + i] += 0.4 * Math.sin(2 * Math.PI * 120 * t) * Math.exp(-25 * t) + 0.15 * gauss() * Math.exp(-30 * t); }
     const cb = NS.classify(bang, sr);
     assert(cb.kind === 'bang', `classify: bang → ${cb.kind} (loud ${cb.loudSec.toFixed(2)}s, crest ${cb.crestDb.toFixed(1)} dB)`);
-    const drag = mk(6); for (let i = 0; i < drag.length; i++) drag[i] = 0.001 * gauss(); for (let i = 2 * sr; i < 4 * sr; i++) drag[i] = 0.056 * gauss();
+    // רעש בתדרים נמוכים (מתחת ל-400 Hz) מנורמל ל-RMS 1: כך נשמעת גרירה דרך הרצפה
+    const lowNoise = (len) => { let y = Float32Array.from({ length: len }, () => gauss()); y = new NS.Biquad('lowpass', 400, sr).run(y); new NS.Biquad('lowpass', 400, sr).run(y, y); let ss = 0; for (const v of y) ss += v * v; const k = 1 / Math.sqrt(ss / len); for (let i = 0; i < len; i++) y[i] *= k; return y; };
+    const drag = mk(6); for (let i = 0; i < drag.length; i++) drag[i] = 0.001 * gauss(); { const dn = lowNoise(2 * sr); for (let i = 0; i < 2 * sr; i++) drag[2 * sr + i] = 0.056 * dn[i]; }
     const cd = NS.classify(drag, sr);
     assert(cd.kind === 'noise', `classify: drag → ${cd.kind} (voiced ${cd.voicedFrac.toFixed(2)}, loud ${cd.loudSec.toFixed(2)}s)`);
     const sp = mk(6.5); for (let i = 0; i < sp.length; i++) sp[i] = 0.001 * gauss();
@@ -140,7 +142,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     // דפיקה ומיד אחריה גרירה של 1.5 שניות
     const bd = mk(7); for (let i = 0; i < bd.length; i++) bd[i] = 0.0005 * gauss();
     for (let i = 0; i < 0.3 * sr; i++) { const t = i / sr; bd[2 * sr + i] += 0.4 * Math.sin(2 * Math.PI * 110 * t) * Math.exp(-15 * t) + 0.15 * gauss() * Math.exp(-40 * t); }
-    { const lp = new NS.Biquad('lowpass', 1200, sr); const dragNoise = lp.run(Float32Array.from({ length: Math.round(1.5 * sr) }, () => gauss())); for (let i = 0; i < dragNoise.length; i++) bd[Math.round(2.45 * sr) + i] += 0.08 * dragNoise[i]; }
+    { const dragNoise = lowNoise(Math.round(1.5 * sr)); for (let i = 0; i < dragNoise.length; i++) bd[Math.round(2.45 * sr) + i] += 0.03 * dragNoise[i]; }
     const cbd = NS.classify(bd, sr);
     assert(cbd.kind === 'bangdrag' && cbd.segments.map((g) => g.kind).join(',') === 'bang,drag', `classify: bang then drag → ${cbd.kind} [${cbd.segments.map((g) => g.kind + '@' + g.sec).join(', ')}]`);
     // גרירה לבד עדיין רעש רציף; דפיקה קצרה עדיין דפיקה (עם המסווג החדש)
@@ -159,17 +161,23 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     // מבנה, לא עוצמה: כיסא רועש (30 dB מעל הדפיקות) באותו קליפ לא מבליע את הדפיקות השקטות, וכל דפיקה נספרת בנפרד
     const mixed = mk(9); for (let i = 0; i < mixed.length; i++) mixed[i] = 0.004 * gauss();
     for (const at of [2, 3.1, 4.5]) for (let i = 0; i < 0.3 * sr; i++) { const t = i / sr; mixed[Math.round(at * sr) + i] += 0.06 * Math.sin(2 * Math.PI * 100 * t) * Math.exp(-10 * t) * Math.min(1, t / 0.03); }
-    for (let i = 0; i < 0.5 * sr; i++) { const t = i / sr; mixed[Math.round(6.5 * sr) + i] += 0.9 * (Math.sin(2 * Math.PI * 70 * t) + 0.4 * gauss()) * Math.exp(-9 * t) * Math.min(1, t / 0.01); }
+    { const cn = lowNoise(Math.round(0.5 * sr)); for (let i = 0; i < 0.5 * sr; i++) { const t = i / sr; mixed[Math.round(6.5 * sr) + i] += 0.9 * (Math.sin(2 * Math.PI * 70 * t) + 0.4 * cn[i]) * Math.exp(-9 * t) * Math.min(1, t / 0.01); } }
     const cm = NS.classify(mixed, sr);
     assert(cm.kind === 'bang' && cm.knocks === 4 && cm.segments[3].heightDb - cm.segments[0].heightDb > 20, `classify: 3 quiet knocks + loud chair → ${cm.kind}, ${cm.knocks} knocks [${cm.segments.map((g) => g.heightDb).join(', ')} dB]`);
     // גרירה של 1.5 שניות אחרי הכיסא: דפיקה + גרירה, והגרירה נמדדת בנפרד מהזנב של הטריקה
-    const chairDrag = Float32Array.from(mixed); { const lp = new NS.Biquad('lowpass', 900, sr); const dn = lp.run(Float32Array.from({ length: Math.round(1.5 * sr) }, () => gauss())); for (let i = 0; i < dn.length; i++) chairDrag[Math.round(7.2 * sr) + i] += 0.05 * dn[i]; }
+    const chairDrag = Float32Array.from(mixed); { const dn = lowNoise(Math.round(1.5 * sr)); for (let i = 0; i < dn.length; i++) chairDrag[Math.round(7.2 * sr) + i] += 0.02 * dn[i]; }
     const ccd = NS.classify(chairDrag, sr);
     assert(ccd.kind === 'bangdrag' && ccd.knocks === 4 && ccd.segments.filter((g) => g.kind === 'drag').length === 1 && near(ccd.segments.find((g) => g.kind === 'drag').sec, 7.2, 0.15), `classify: knocks + chair + drag → ${ccd.kind} [${ccd.segments.map((g) => g.kind + '@' + g.sec.toFixed(1)).join(', ')}]`);
     // רקע שעולה לאט (מכונית עוברת): רעש רציף, בלי דפיקות
-    const swell = mk(8); for (let i = 0; i < swell.length; i++) swell[i] = 0.004 * gauss(); { const lp = new NS.Biquad('lowpass', 500, sr); const dn = lp.run(Float32Array.from({ length: Math.round(4 * sr) }, () => gauss())); for (let i = 0; i < dn.length; i++) { const t = i / dn.length; swell[Math.round(2 * sr) + i] += 0.04 * dn[i] * Math.sin(Math.PI * t); } }
+    const swell = mk(8); for (let i = 0; i < swell.length; i++) swell[i] = 0.004 * gauss(); { const dn = lowNoise(Math.round(4 * sr)); for (let i = 0; i < dn.length; i++) { const t = i / dn.length; swell[Math.round(2 * sr) + i] += 0.02 * dn[i] * Math.sin(Math.PI * t); } }
     const csw = NS.classify(swell, sr);
     assert(csw.kind === 'noise' && csw.knocks === 0, `classify: slow swell → ${csw.kind}, ${csw.knocks} knocks`);
+    // טיפול בטלפון: נקישות רחבות-פס (אנרגיה מעל 1 kHz) ליד המיקרופון, בין דפיקות בתדרים נמוכים. לא דרך הקיר
+    const handling = Float32Array.from(knocks);
+    for (const at of [2.5, 3.6, 5.0]) for (let i = 0; i < 0.04 * sr; i++) { const t = i / sr; handling[Math.round(at * sr) + i] += 0.15 * gauss() * Math.exp(-120 * t); }
+    const chd = NS.classify(handling, sr);
+    assert(chd.kind === 'handling' && chd.broadband === 3 && chd.knocks === 6, `classify: LF knocks + broadband clicks → ${chd.kind} (${chd.broadband} broadband of ${chd.knocks})`);
+    assert(NS.classify(knocks, sr).broadband === 0 && NS.classify(mixed, sr).broadband === 0, 'classify: wall knocks and chair have no broadband segments');
     // איחוד אירועים צמודים אחרי הסיווג
     const ev = (startSec, endSec, kind, extra) => Object.assign({ startSec, noiseSec: startSec + 2, endSec, peakDb: -40, avgDb: -55, truncated: false, kind, selected: true, cls: { kind, segments: [{ kind: kind === 'noise' ? 'drag' : 'bang', sec: 2, dur: 0.3 }], loudSec: 0.3, knocks: kind === 'noise' ? 0 : 1 } }, extra || {});
     const rev = [ev(10, 16, 'bang', { peakDb: -30 }), ev(16, 20.5, 'bang'), ev(20.5, 24, 'noise'), ev(30, 36, 'noise'), ev(36, 40, 'breath'), ev(40, 44, 'noise'), ev(44, 48, 'noise', { rhythmic: true }), ev(48, 52, 'speech')];
