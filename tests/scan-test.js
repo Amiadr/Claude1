@@ -124,7 +124,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     const ring = mk(5); for (let i = 0; i < ring.length; i++) ring[i] = 0.001 * gauss(); for (let i = 0; i < 1.5 * sr; i++) { const t = i / sr; ring[2 * sr + i] += 0.3 * Math.sin(2 * Math.PI * 120 * t) * Math.exp(-2 * t); }
     const cr = NS.classify(ring, sr);
     assert(cr.kind !== 'speech', `classify: ringing thump (constant 120 Hz) → ${cr.kind}, not speech (pitchVar ${cr.pitchVar.toFixed(3)}, onsets ${cr.onsets})`);
-    const hum = mk(5); for (let i = 0; i < hum.length; i++) hum[i] = 0.001 * gauss(); for (let i = 0; i < 3 * sr; i++) { const t = i / sr; hum[sr + i] += 0.1 * (Math.sin(2 * Math.PI * 100 * t) + 0.5 * Math.sin(2 * Math.PI * 200 * t) + 0.9 * Math.sin(2 * Math.PI * 600 * t) + 0.8 * Math.sin(2 * Math.PI * 750 * t)); } // זמזום מנוע עם הרמוניות גם מעל 300 Hz
+    const hum = mk(5); for (let i = 0; i < hum.length; i++) hum[i] = 0.001 * gauss(); for (let i = 0; i < 3 * sr; i++) { const t = i / sr; hum[sr + i] += 0.1 * (Math.sin(2 * Math.PI * 160 * t) + 0.5 * Math.sin(2 * Math.PI * 320 * t) + 0.9 * Math.sin(2 * Math.PI * 600 * t) + 0.8 * Math.sin(2 * Math.PI * 750 * t)); } // זמזום מנוע עם הרמוניות גם מעל 300 Hz (יסוד מעל 150 Hz: רעש מבני, לא הבל אוויר)
     const ch = NS.classify(hum, sr);
     assert(ch.kind === 'drag', `classify: steady motor hum (mid-band harmonics) → ${ch.kind}, not speech (voiced ${ch.voicedFrac.toFixed(2)}, pitchVar ${ch.pitchVar.toFixed(3)})`);
     const t0 = Date.now(); NS.classify(mk(120), sr); const ms = Date.now() - t0;
@@ -186,6 +186,19 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     const csd = NS.classify(softDrag, sr);
     assert(csd.kind === 'drag' && csd.uncertain === true && csd.dragScore < cdo.dragScore, `classify: quiet soft drag → ${csd.kind}, uncertain, lower score (${csd.dragScore}% vs ${cdo.dragScore}%; mf ${csd.segments.map((g) => g.mfRatio).join(',')})`);
     // גרירה של 1.5 שניות אחרי הכיסא: דפיקה + גרירה, והגרירה נמדדת בנפרד מהזנב של הטריקה
+    // רצף עם פס אמצע (כמו גרירה) שהפס הנמוך שלו הוא כמעט כולו תת-בס (מתחת ל-150 Hz): הבל נשימה כבד על המיקרופון → נשימה, לא גרירה
+    const deep = mk(6); for (let i = 0; i < deep.length; i++) deep[i] = 0.004 * gauss(); { const dn = lowNoise(Math.round(1.2 * sr), 110); const mn = lowNoise(Math.round(1.2 * sr)); const bp = new NS.Biquad('highpass', 300, sr).run(mn); new NS.Biquad('highpass', 300, sr).run(bp, bp); for (let i = 0; i < dn.length; i++) { const t = i / dn.length; deep[Math.round(2 * sr) + i] += (0.05 * dn[i] + 0.06 * bp[i]) * Math.sin(Math.PI * t); } }
+    const cdp = NS.classify(deep, sr); const dseg = cdp.segments.find((g) => g.kind === 'breath' || g.kind === 'drag');
+    assert(cdp.kind === 'breath' && dseg && dseg.kind === 'breath' && dseg.subFrac >= 0.55 && dseg.mfRatio >= 0.15, `classify: sub-bass run with mid-band → breath (${cdp.kind}: ${JSON.stringify(dseg)})`);
+    assert(cdp.dragScore !== null && cdp.dragScore < 45, `classify: sub-bass run gets a low drag score (${cdp.dragScore})`);
+    // כיסא שנגרר ונתקל: שתי מכות חזקות וביניהן הרעש לא יורד לרקע → דפיקה + גרירה (מגע מתמשך), לא שתי דפיקות
+    const bumpy = mk(6); for (let i = 0; i < bumpy.length; i++) bumpy[i] = 0.004 * gauss();
+    { const dn = lowNoise(Math.round(0.9 * sr)); for (let i = 0; i < dn.length; i++) bumpy[Math.round(2 * sr) + i] += 0.05 * dn[i]; const k = tock(90, 450, 0.9, 12); for (const at of [2.05, 2.75]) for (let i = 0; i < 0.3 * sr; i++) { const t = i / sr; bumpy[Math.round(at * sr) + i] += k(t) * Math.min(1, t / 0.005); } }
+    const cbp = NS.classify(bumpy, sr); const sus = cbp.segments.find((g) => g.sustained);
+    assert(cbp.kind === 'bangdrag' && sus && sus.kind === 'drag' && sus.heightDb >= 10, `classify: two strong bumps with sustained noise between → bangdrag with a sustained drag segment (${cbp.kind}: ${cbp.segments.map((g) => g.kind + (g.sustained ? 'S' : '') + '@' + g.sec + ' ' + g.heightDb).join(', ')})`);
+    const bumps = mk(6); for (let i = 0; i < bumps.length; i++) bumps[i] = 0.004 * gauss(); { const k = tock(90, 450, 0.9, 12); for (const at of [2.05, 2.75]) for (let i = 0; i < 0.3 * sr; i++) { const t = i / sr; bumps[Math.round(at * sr) + i] += k(t) * Math.min(1, t / 0.005); } }
+    const cbs = NS.classify(bumps, sr);
+    assert(cbs.kind === 'bang' && !cbs.segments.some((g) => g.sustained), `classify: the same two bumps with silence between → bang only (${cbs.kind}: ${cbs.segments.map((g) => g.kind + (g.sustained ? 'S' : '')).join(', ')})`);
     const chairDrag = Float32Array.from(mixed); { const dn = lowNoise(Math.round(1.5 * sr)); for (let i = 0; i < dn.length; i++) chairDrag[Math.round(7.2 * sr) + i] += 0.02 * dn[i]; }
     const ccd = NS.classify(chairDrag, sr);
     assert(ccd.kind === 'bangdrag' && ccd.knocks === 4 && ccd.segments.filter((g) => g.kind === 'drag').length === 1 && near(ccd.segments.find((g) => g.kind === 'drag').sec, 7.2, 0.15), `classify: knocks + chair + drag → ${ccd.kind} [${ccd.segments.map((g) => g.kind + '@' + g.sec.toFixed(1)).join(', ')}]`);

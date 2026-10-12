@@ -1094,9 +1094,10 @@
   }
   function updateReviewSummary() {
     const sel = imp.review.filter((r) => r.selected).length;
+    const hiddenSel = sel - visibleReview().filter(({ r }) => r.selected).length; // מסומנים שהסינון מסתיר: נשמרים בכל זאת, וכדאי שהמשתמש ידע
     const speech = imp.review.filter((r) => r.kind === 'speech').length, breath = imp.review.filter((r) => effectiveKind(r) === 'breath').length;
     $('#impSelCount').textContent = sel; $('#impSaveBtn').disabled = !sel;
-    $('#impReviewSummary').textContent = `${imp.review.length} אירועים, ${sel} מסומנים לשמירה${breath ? `. ${breath} נראים כנשימות או רעש מחזורי` : ''}${speech ? `. ${speech} נשמעים כדיבור` : ''}${breath || speech ? ' (מסומנים בתג, אפשר לבטל את סימונם בלחיצה)' : ''}.`;
+    $('#impReviewSummary').textContent = `${imp.review.length} אירועים, ${sel} מסומנים לשמירה${hiddenSel ? ` (${hiddenSel} מהם מוסתרים בסינון)` : ''}${breath ? `. ${breath} נראים כנשימות או רעש מחזורי` : ''}${speech ? `. ${speech} נשמעים כדיבור` : ''}${breath || speech ? ' (מסומנים בתג, אפשר לבטל את סימונם בלחיצה)' : ''}.`;
   }
   async function playReview(li, i) {
     const p = li.querySelector('.player');
@@ -1242,6 +1243,7 @@
     $('#impSelNoBreath').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { if (effectiveKind(r) === 'breath') r.selected = false; }); renderReview(); });
     $('#impSelShown').addEventListener('click', () => { if (!imp || !imp.review) return; for (const { r } of visibleReview()) r.selected = true; renderReview(); });
     $('#impClearShown').addEventListener('click', () => { if (!imp || !imp.review) return; for (const { r } of visibleReview()) r.selected = false; renderReview(); });
+    $('#impSelOnlyShown').addEventListener('click', () => { if (!imp || !imp.review) return; const shown = new Set(visibleReview().map(({ r }) => r)); imp.review.forEach((r) => { r.selected = shown.has(r); }); renderReview(); });
     $('#revKinds').addEventListener('click', (e) => { const b = e.target.closest('button[data-kind]'); if (!b || !imp || !imp.review) return; const k = b.dataset.kind; if (imp.filter.kinds.has(k)) imp.filter.kinds.delete(k); else imp.filter.kinds.add(k); renderReview(); });
     $('#revKindsAll').addEventListener('click', () => { if (!imp || !imp.review) return; for (const k of KIND_ORDER) imp.filter.kinds.add(k); renderReview(); });
     $('#revMinLevel').addEventListener('input', () => { if (!imp || !imp.review) return; imp.filter.minLevel = Number($('#revMinLevel').value); renderReview(); });

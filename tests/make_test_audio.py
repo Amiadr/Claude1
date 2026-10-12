@@ -35,6 +35,13 @@ def _highpass(sig, sr, fc=600.0):
     return out
 
 
+def _drag_noise(sig, sr):
+    """רעש גרירה דרך הרצפה: תדרים נמוכים ובינוניים (עד 700 Hz) אבל כמעט בלי תת-בס (מתחת ל-130 Hz) – כמו הגרירות
+    המתויגות, שבהן רק 20% עד 40% מהפס הנמוך נמצא מתחת ל-150 Hz (נשימה על המיקרופון: 60% ומעלה). נרמול ל-RMS 1."""
+    y = _highpass(_lowpass(sig, sr, 700.0), sr, 130.0)
+    return y / (np.sqrt(np.mean(y * y)) + 1e-12)
+
+
 def _lowpass(sig, sr, fc=400.0):
     """מסנן LPF (biquad מסדר 2, שני מעברים) ונרמול ל-RMS 1 – לגרירה: רעש שעובר דרך הרצפה כמעט בלי תדרים גבוהים."""
     import math
@@ -74,7 +81,7 @@ def make_breath_file(out, sr):
     sig[i0:i0 + len(t)] += 0.35 * (np.sin(2 * np.pi * 90 * t) + 0.5 * np.sin(2 * np.pi * 140 * t) + 0.9 * np.sin(2 * np.pi * 420 * t) * np.exp(-3 * t)) * np.exp(-7 * t)
     # גרירה בשנייה 40: רעש בתדרים נמוכים (דרך הרצפה), 2 שניות
     i0 = int(40 * sr); m = int(2 * sr)
-    sig[i0:i0 + m] += 0.06 * _lowpass(rng.normal(0, 1, m), sr, 700.0) + 0.05 * np.sin(2 * np.pi * 60 * np.arange(m) / sr) * (0.7 + 0.3 * rng.normal(0, 1, m))
+    sig[i0:i0 + m] += 0.06 * _drag_noise(rng.normal(0, 1, m), sr) + 0.03 * np.sin(2 * np.pi * 210 * np.arange(m) / sr) * (0.7 + 0.3 * rng.normal(0, 1, m))
     pcm = (np.clip(sig, -1, 1) * 32767).astype(np.int16)
     with wave.open(out, "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm.tobytes())
@@ -101,7 +108,7 @@ def main():
             # דפיקה דרך הקיר: צלצול נמוך (120 Hz) + "טוק" באמצע (450 Hz) שדועך מהר יותר, בלי תדרים גבוהים
             burst = np.sin(2 * np.pi * 120 * t) * np.exp(-t * 25) * 0.4 + np.sin(2 * np.pi * 450 * t) * np.exp(-t * 33) * 0.45
         else:
-            burst = 0.056 * _lowpass(rng.normal(0, 1, i1 - i0), sr, 700.0)  # ~ -25 dBFS RMS, תדרים נמוכים ובינוניים (דרך הרצפה)
+            burst = 0.056 * _drag_noise(rng.normal(0, 1, i1 - i0), sr)  # ~ -25 dBFS RMS, תדרים נמוכים ובינוניים (דרך הרצפה), בלי תת-בס
         sig[i0:i1] += burst
     if args.with_speech:
         i0 = int(32.0 * sr)
