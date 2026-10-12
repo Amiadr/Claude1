@@ -66,7 +66,7 @@ function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.e
     assert(b.peak > 65 && b.peak < 85, `drag level in expected range (${b.peak.toFixed(0)})`);
     assert(Math.abs((a.noiseTs - a.startTs) / 1000 - 2.0) < 0.3, `pre-roll ≈ 2s (got ${((a.noiseTs - a.startTs) / 1000).toFixed(2)})`);
     assert(events.every((e) => e.sampleRate === 16000), 'sample rate 16000');
-    assert(events.map((e) => e.kind).join('/') === 'bang/noise/bang', `live classification bang/noise/bang (got ${events.map((e) => e.kind).join('/')})`);
+    assert(events.map((e) => e.kind).join('/') === 'bang/drag/bang', `live classification bang/drag/bang (got ${events.map((e) => e.kind).join('/')})`);
     assert(events.every((e) => Math.abs(e.size - (44 + e.durationSec * e.sampleRate * 2)) < 4), 'WAV size matches duration');
   }
   // הקליפים בממשק

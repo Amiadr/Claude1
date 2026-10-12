@@ -431,12 +431,12 @@
     currentFilter = sel.value;
   }
   const selectedIds = new Set();
-  const KIND_LABEL = { bang: 'דפיקה', bangdrag: 'דפיקה + גרירה', handling: 'ליד המכשיר', noise: 'רעש רציף', breath: 'נשימה / אוויר', speech: 'ייתכן דיבור', unknown: 'לא ידוע' };
-  const KIND_ORDER = ['bang', 'bangdrag', 'handling', 'noise', 'breath', 'speech', 'unknown'];
+  const KIND_LABEL = { bang: 'דפיקה', bangdrag: 'דפיקה + גרירה', drag: 'גרירה', handling: 'ליד המכשיר', noise: 'רעש רציף', breath: 'נשימה / אוויר', speech: 'ייתכן דיבור', unknown: 'לא ידוע' };
+  const KIND_ORDER = ['bang', 'bangdrag', 'drag', 'handling', 'noise', 'breath', 'speech', 'unknown'];
   // תיוג ידני "מה זה באמת?": האמת לצד הסיווג האוטומטי, כדי לאסוף דוגמאות לכיול המסווג (ייצוא לניתוח)
   const LABELS = { wall: 'דפיקה על הקיר', drag: 'גרירה', chair: 'כיסא', breath: 'נשימה', speech: 'דיבור', handling: 'טיפול בטלפון', background: 'רעש רקע', other: 'אחר' };
   // אילו סיווגים אוטומטיים נחשבים נכונים לכל תיוג (משמש גם את tests/eval-samples.js)
-  const LABEL_EXPECT = { wall: ['bang', 'bangdrag'], drag: ['noise', 'bangdrag'], chair: ['bang', 'bangdrag'], breath: ['breath'], speech: ['speech'], handling: ['handling'], background: ['noise', 'breath', 'handling'], other: [] };
+  const LABEL_EXPECT = { wall: ['bang', 'bangdrag'], drag: ['drag', 'bangdrag'], chair: ['bang', 'bangdrag'], breath: ['breath'], speech: ['speech'], handling: ['handling'], background: ['noise', 'breath', 'handling'], other: [] };
   // אפשר לסמן כמה תיוגים לאירוע (למשל דפיקה על הקיר וגם גרירה). labels: מערך; label: הראשון, לתאימות
   function labelsOf(e) { return Array.isArray(e.labels) ? e.labels : (e.label ? [e.label] : []); }
   function labelText(e) { const names = labelsOf(e).map((k) => (k === 'other' ? `אחר: ${e.labelText || ''}`.trim() : LABELS[k] || k)); return names.join(' + '); }
@@ -458,13 +458,13 @@
     const txt = target.closest('input[data-act="labelText"]'); if (!txt) return false;
     item.labelText = txt.value.trim(); return true;
   }
-  const KIND_HINT = { handling: 'נקישות עם תדרים גבוהים, כמו טיפול בטלפון או חפץ שנופל בחדר. רעש דרך הקיר מגיע כמעט בלי תדרים כאלה', breath: 'הבל נשימה על המיקרופון או איוושה: כמעט בלי אנרגיה ב-300–1000 Hz, בניגוד לדפיקה דרך הקיר', noise: 'רעש מתמשך, או דפיקה בודדת חלשה בלי רצף' };
+  const KIND_HINT = { handling: 'נקישות עם תדרים גבוהים, כמו טיפול בטלפון או חפץ שנופל בחדר. רעש דרך הקיר מגיע כמעט בלי תדרים כאלה', breath: 'הבל נשימה על המיקרופון או איוושה: כמעט בלי אנרגיה ב-300–1000 Hz, בניגוד לדפיקה דרך הקיר', noise: 'דפיקה בודדת חלשה בלי רצף, או רעש שחצה את הסף בלי מבנה מזוהה', drag: 'רעש מתמשך עם אנרגיה ב-300–1000 Hz, כמו גרירת רהיט, בלי דפיקות לפניו' };
   kindFilter = new Set(KIND_ORDER);
   function segText(cls) {
     if (!cls || !cls.segments || !cls.segments.length) return '';
     const knocks = cls.segments.filter((g) => g.kind === 'bang' && !g.broadband).length, broadband = cls.segments.filter((g) => g.broadband).length, air = cls.segments.filter((g) => g.kind === 'air').length;
     const parts = knocks ? [knocks === 1 ? 'דפיקה' : `${knocks} דפיקות`] : [];
-    for (const g of cls.segments) if (g.kind === 'drag' || g.kind === 'breath') parts.push(`${{ drag: 'רעש רציף', breath: 'נשימה' }[g.kind]} ${g.dur} שנ׳`);
+    for (const g of cls.segments) if (g.kind === 'drag' || g.kind === 'breath') parts.push(`${{ drag: 'גרירה', breath: 'נשימה' }[g.kind]} ${g.dur} שנ׳`);
     if (air) parts.push(`${air} הבלי אוויר (רק תדרים נמוכים)`);
     if (broadband) parts.push(`${broadband} עם תדרים גבוהים (ליד המכשיר, לא דרך הקיר)`);
     return parts.length ? 'מבנה: ' + parts.join(', ') : '';
@@ -498,7 +498,7 @@
     const time = document.createElement('span'); time.className = 'ltr time';
     const legend = document.createElement('span'); legend.className = 'legend';
     const marks = []; if (segments && segments.some((g) => g.kind === 'bang' && !g.broadband)) marks.push('<i style="background:rgba(245,158,11,.7)"></i>דפיקה');
-    if (segments && segments.some((g) => g.kind === 'drag')) marks.push('<i style="background:rgba(167,139,250,.7)"></i>רעש רציף');
+    if (segments && segments.some((g) => g.kind === 'drag')) marks.push('<i style="background:rgba(167,139,250,.7)"></i>גרירה');
     if (segments && segments.some((g) => g.kind === 'breath' || g.kind === 'air')) marks.push('<i style="background:rgba(148,163,184,.7)"></i>נשימה / אוויר');
     if (segments && segments.some((g) => g.broadband)) marks.push('<i style="background:rgba(251,113,133,.8)"></i>ליד המכשיר');
     legend.innerHTML = marks.join(' ');
