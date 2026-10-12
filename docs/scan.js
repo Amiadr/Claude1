@@ -705,9 +705,27 @@
     let midHi = 0, nLoud = 0; for (let f = 0; f < nf; f++) if (E[f] >= LOUD_DB) { midHi += (eMid[f] + eHi[f]) / Math.max(rms[f] * rms[f], 1e-12); nLoud++; } midHi = nLoud ? midHi / nLoud : 0;
     // דיבור: מחזוריות עם גובה צליל משתנה והברות, וגם אנרגיה מעל 300 Hz (נחירה מחזורית בתדרים נמוכים אינה דיבור)
     const kind = voicedFrac >= 0.35 && loudSec >= 0.4 && pitchVar >= 0.06 && onsets >= 2 && midHi >= 0.3 ? 'speech' : kindFromSegments(segments);
-    const out = { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets, knocks, broadband: segments.filter((g) => g.broadband).length, floorDb, segments };
+    const ds = dragScore(segments);
+    // גרירה לא ודאית: בלי דפיקות, רק מרצפים "רכים" (15–25% פס אמצע) ומתחת ל-20 dB מעל הרקע
+    const uncertain = kind === 'drag' && !segments.some((g) => g.kind === 'drag' && !g.broadband && (!g.soft || g.heightDb >= 20));
+    const out = { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets, knocks, broadband: segments.filter((g) => g.broadband).length, floorDb, segments, dragScore: ds, uncertain };
     if (opts && opts.envelope) { out.envelopeStepMs = ms(1); out.envelope = Array.from(E, (v) => Math.round(v * 10) / 10); } // dB מעל הרקע, כל 10ms
     return out;
+  }
+  // "ציון גרירה" 0–100 לרצף הכי גרירתי בקליפ (רצפים שאינם רחבי-פס): כמה הוא דומה לגרירה אמיתית ולא לנשימה כבדה.
+  // לא משנה את ההכרעה; מוצג כדי לראות כמה קרובה נשימה לגבול הגרירה ולהיפך. שלושה חלקים, לפי מה שמפריד
+  // בהקלטות מתויגות: פס אמצע (50%): 10% → 0, 35% ומעלה → מלא; מהירות ההתחלה (25%): עלייה של 100ms → מלא,
+  // 1000ms ומעלה → 0; גובה מעל הרקע (25%): 8 dB → 0, 25 dB ומעלה → מלא. null כשאין רצף כזה.
+  function dragScore(segments) {
+    const clamp = (v) => Math.max(0, Math.min(1, v));
+    let best = null;
+    for (const g of segments) {
+      if (g.kind !== 'drag' && g.kind !== 'breath') continue; if (g.broadband || g.riseMs === undefined) continue;
+      const mid = clamp(((g.mfRatio || 0) - 0.10) / 0.25), onset = clamp(1 - Math.log10(Math.max(100, g.riseMs) / 100)), height = clamp(((g.heightDb || 0) - 8) / 17);
+      const score = Math.round(100 * (0.5 * mid + 0.25 * onset + 0.25 * height));
+      if (best === null || score > best) best = score;
+    }
+    return best;
   }
   // סוג האירוע לפי המקטעים שנמצאו בו (בלי דיבור, שנמדד על כל הקליפ):
   //   דפיקה       – שתי דפיקות ומעלה (השכן דופק ברצף), או דפיקה אחת חזקה (20 dB ומעלה מעל הרקע, כמו כיסא שנטרק)
@@ -865,9 +883,9 @@
     const da = a.endSec - a.startSec, db = b.endSec - b.startSec, kind = mergedKind(a, b);
     const shift = (g) => Object.assign({}, g, { sec: Math.round((g.sec + b.startSec - a.startSec) * 100) / 100 });
     const segments = [...((a.cls && a.cls.segments) || []), ...((b.cls && b.cls.segments) || []).map(shift)];
-    const cls = Object.assign({}, a.cls || {}, { kind, segments, loudSec: ((a.cls && a.cls.loudSec) || 0) + ((b.cls && b.cls.loudSec) || 0), knocks: ((a.cls && a.cls.knocks) || 0) + ((b.cls && b.cls.knocks) || 0), broadband: segments.filter((g) => g.broadband).length });
+    const cls = Object.assign({}, a.cls || {}, { kind, segments, loudSec: ((a.cls && a.cls.loudSec) || 0) + ((b.cls && b.cls.loudSec) || 0), knocks: ((a.cls && a.cls.knocks) || 0) + ((b.cls && b.cls.knocks) || 0), broadband: segments.filter((g) => g.broadband).length, dragScore: dragScore(segments), uncertain: kind === 'drag' && !segments.some((g) => g.kind === 'drag' && !g.broadband && (!g.soft || g.heightDb >= 20)) });
     const avgDb = 10 * Math.log10((da * Math.pow(10, a.avgDb / 10) + db * Math.pow(10, b.avgDb / 10)) / Math.max(da + db, 1e-9));
-    return Object.assign({}, a, { endSec: b.endSec, peakDb: Math.max(a.peakDb, b.peakDb), avgDb, truncated: !!b.truncated, kind, cls, merged: (a.merged || 1) + (b.merged || 1), selected: a.selected !== false && b.selected !== false });
+    return Object.assign({}, a, { endSec: b.endSec, peakDb: Math.max(a.peakDb, b.peakDb), avgDb, truncated: !!b.truncated, kind, cls, dragScore: cls.dragScore, uncertain: cls.uncertain, merged: (a.merged || 1) + (b.merged || 1), selected: a.selected !== false && b.selected !== false });
   }
   function mergeAdjacent(list, opts) {
     const maxClip = (opts && opts.maxClip) || Infinity;
@@ -907,5 +925,5 @@
     return c;
   }
 
-  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, kindFromSegments, markRhythmic, mergeAdjacent, mergedKind, keepsApart, resample, Resampler, encodeWav, makeZip, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
+  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, kindFromSegments, dragScore, markRhythmic, mergeAdjacent, mergedKind, keepsApart, resample, Resampler, encodeWav, makeZip, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
 })(typeof self !== 'undefined' ? self : globalThis);

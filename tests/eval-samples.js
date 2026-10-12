@@ -54,7 +54,8 @@ const segText = (cls) => cls.segments.map((g) => `${g.kind === 'bang' ? 'דפי�
       const mark = ok === null ? '  ' : ok ? 'ok' : '!!';
       const label = labels.length ? labels.map((l) => (l === 'other' ? `אחר: ${c.labelText || ''}` : (b.meta.labels && b.meta.labels[l]) || l)).join('+') : '(לא תויג)';
       const changed = c.kind && c.kind !== cls.kind ? ` (בייצוא: ${KIND_HE[c.kind] || c.kind})` : '';
-      console.log(`${mark} ${path.basename(c.file).padEnd(44)} תיוג: ${label.padEnd(16)} עכשיו: ${(KIND_HE[cls.kind] || cls.kind).padEnd(12)} ${cls.knocks} דפיקות${cls.broadband ? `, ${cls.broadband} רחב-פס` : ''}${changed}${c.note ? `  הערה: ${c.note}` : ''}`);
+      const score = typeof cls.dragScore === 'number' ? ` גרירה ${String(cls.dragScore).padStart(3)}%` : '        ';
+      console.log(`${mark} ${path.basename(c.file).padEnd(44)} תיוג: ${label.padEnd(16)} עכשיו: ${((KIND_HE[cls.kind] || cls.kind) + (cls.uncertain ? '?' : '')).padEnd(12)}${score} ${cls.knocks} דפיקות${cls.broadband ? `, ${cls.broadband} רחב-פס` : ''}${changed}${c.note ? `  הערה: ${c.note}` : ''}`);
       if (verbose) console.log(`      ${segText(cls) || 'בלי מקטעים'}  (רקע ${(cls.floorDb + 100).toFixed(0)}, שיא ${c.peakDb})`);
       rows.push({ label: labels.join('+'), ok });
     }
