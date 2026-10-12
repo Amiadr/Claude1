@@ -66,8 +66,10 @@
       const s = await NoiseScan.open(file);
       if (!s.info || !s.info.supported) { setError(s.info && s.info.reason ? s.info.reason : 'פורמט לא נתמך לחיתוך. המר ל-WAV/MP3/M4A.'); return; }
       if (s.checkSupport) { await s.checkSupport(); if (!s.info.supported) { setError(s.info.reason || 'הדפדפן לא יודע לפענח את הקובץ'); return; } }
+      // MP3: אינדקס פריימים (כותרות בלבד, בלי פענוח) כדי שאפשר יהיה לקפוץ לכל זמן, וכדי לדעת את האורך המדויק
+      if (s.ensureIndex) { await s.ensureIndex((f) => setProgress(f, 'קורא את מבנה הקובץ…')); hideProgress(); }
       st.scanner = s; st.info = s.info;
-    } catch (e) { setError('פתיחת הקובץ נכשלה: ' + e.message); return; }
+    } catch (e) { hideProgress(); setError('פתיחת הקובץ נכשלה: ' + e.message); return; }
     $('#cutName').textContent = file.name;
     $('#cutFormat').textContent = [String(st.info.format || '').toUpperCase(), st.info.codec, st.info.sampleRate ? st.info.sampleRate + ' Hz' : '', fmtBytes(file.size)].filter(Boolean).join(' · ');
     $('#cutDuration').textContent = st.info.durationSec ? (st.info.durationEstimated ? '~' : '') + fmtHms(st.info.durationSec) : 'לא ידוע';

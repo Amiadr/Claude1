@@ -66,9 +66,22 @@ const localMs = (y, mo, d, h, mi, s) => new Date(y, mo - 1, d, h, mi, s).getTime
   const selTxt = await page.$eval('#cutSelInfo', (el) => el.textContent);
   assert(/23:00:10 עד 23:00:20/.test(selTxt), `wav: two clicks on the timeline select 23:00:10–23:00:20 (${selTxt.slice(0, 40)})`);
 
-  // ---- MP3: סריקה, פיצול ל-20 שניות, רק חלקים עם אירועים (שניהם), הורדת כולם ----
+  // ---- MP3 בלי Xing (אורך משוער): חיתוך לפי שעות בלי סריקה בכלל (הבאג שדווח: "reading 'length'") ----
+  await page.setInputFiles('#cutFile', path.join(dir, 'vbr_noxing.mp3'));
+  await page.waitForFunction(() => !document.querySelector('#cutWork').hidden && document.querySelector('#cutName').textContent.includes('vbr_noxing'), null, { timeout: 20000 });
+  assert(!/~/.test(await page.$eval('#cutDuration', (el) => el.textContent)) && near(await page.evaluate(() => window.__noiseCut.state.info.durationSec), 40, 0.2), `mp3 no-xing: exact duration after frame indexing (${await page.$eval('#cutDuration', (el) => el.textContent)})`);
+  await page.fill('#cutDate', '2026-09-26'); await page.fill('#cutTime', '23:00:00'); await page.dispatchEvent('#cutTime', 'change');
+  await page.fill('#cutFrom', '23:00:20'); await page.dispatchEvent('#cutFrom', 'change');
+  await page.fill('#cutLen', '0.25'); await page.dispatchEvent('#cutLen', 'change');
+  [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#cutGoBtn')]);
+  out = path.join(outDir, dl.suggestedFilename()); await dl.saveAs(out);
+  w = await wavInfo(out);
+  { const sr = 16000; const e = (a, b) => { let s = 0; for (let i = Math.round(a * sr); i < Math.round(b * sr); i++) s += w.samples[i] * w.samples[i]; return s / ((b - a) * sr); };
+    assert(dl.suggestedFilename() === '2026-09-26_23-00-20_vbr_noxing.wav' && near(w.info.durationSec, 15, 0.1) && e(5.0, 5.15) > 100 * e(1, 4), `mp3 no-xing: 23:00:20 + 15 s cut without scanning, bang at +5.0 s (${dl.suggestedFilename()}, ${w.info.durationSec.toFixed(2)} s)`); }
+
+  // ---- MP3: סריקה, פיצול ל-15 שניות, רק חלקים עם אירועים, הורדת כולם ----
   await page.setInputFiles('#cutFile', path.join(dir, 'rec_20260926_230000.mp3'));
-  await page.waitForFunction(() => !document.querySelector('#cutWork').hidden && document.querySelector('#cutName').textContent.includes('mp3'), null, { timeout: 20000 });
+  await page.waitForFunction(() => !document.querySelector('#cutWork').hidden && document.querySelector('#cutName').textContent.includes('rec_2026'), null, { timeout: 20000 });
   await page.click('#cutScanBtn');
   await page.waitForFunction(() => window.__noiseCut.state.levels, null, { timeout: 60000 });
   const scanInfo = await page.$eval('#cutScanInfo', (el) => el.textContent);
