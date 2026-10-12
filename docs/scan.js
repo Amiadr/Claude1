@@ -690,7 +690,7 @@
       const airBreath = bands.mfRatio < KNOCK_MID && bands.hfRatio < BROADBAND;                                              // רצף רק בתדרים נמוכים: הבל אוויר
       const isBreath = hissBreath || airBreath;
       if (!isBreath && dur < DRAG_MIN_SEC) continue; // רצף קצר של רקע מוגבה, לא גרירה
-      // גרירה "רכה": קצת פס אמצע (15–25%) בלי תדרים גבוהים. לצד דפיקות זו גרירה; בלי דפיקות זו כנראה נשימה כבדה
+      // גרירה "רכה": קצת פס אמצע (15–25%) בלי תדרים גבוהים. נספרת כגרירה; רק משמשת הקשר לדפיקה בודדת בתוך נשימות
       const soft = !isBreath && bands.mfRatio < 0.25 && bands.hfRatio < BROADBAND;
       segments.push(Object.assign({ kind: isBreath ? 'breath' : 'drag', soft, sec: sec(rg.a), dur: Math.round(dur * 100) / 100, heightDb: Math.round(E[peakF] * 10) / 10, riseMs, humpDb: Math.round(humpDb * 10) / 10, broadband: !isBreath && bands.hfRatio >= BROADBAND }, bands));
     }
@@ -713,24 +713,28 @@
   //   דפיקה       – שתי דפיקות ומעלה (השכן דופק ברצף), או דפיקה אחת חזקה (20 dB ומעלה מעל הרקע, כמו כיסא שנטרק)
   //   דפיקה+גרירה – דפיקות וגם רצף גרירה
   //   ליד המכשיר  – שתי נקישות רחבות-פס ומעלה (או אחת כשאין שום דבר אחר)
-  //   נשימה/אוויר – בלי דפיקות, ורוב המקטעים הם אוויר או נשימה (גרירה "רכה" בלי דפיקות נחשבת נשימה); דפיקה בודדת חלשה בתוך נשימות היא נשימה
-  //   רעש רציף    – בלי דפיקות: רצפי גרירה (גם גרירה בלי דפיקות לפניה), דפיקה בודדת חלשה בלי הקשר (לא מעניינת), או כלום
+  //   גרירה       – בלי דפיקות, רצף גרירה (עם פס אמצע). גרירה חייבת להיתפס, גם במחיר שנשימה כבדה (15–25% פס אמצע)
+  //                 תסומן גרירה; רק בתוך רצף נשימה ברור (3 מקטעי אוויר/נשימה ומעלה, בלי גרירה עם 25%+) היא נשימה
+  //   נשימה/אוויר – בלי דפיקות וגרירה, רוב המקטעים הם אוויר או נשימה; דפיקה בודדת חלשה בתוך נשימות היא נשימה
+  //   רעש רציף    – דפיקה בודדת חלשה בלי הקשר (לא רצף של השכן), או רעש שחצה את הסף בלי מבנה מזוהה
   function kindFromSegments(segments) {
     const peaks = segments.filter((g) => g.kind === 'bang');
     const clicks = peaks.filter((g) => g.broadband).length;
     let knocks = peaks.filter((g) => !g.broadband && !g.weak).length; if (knocks) knocks += peaks.filter((g) => g.weak && !g.broadband).length;
     const loudest = peaks.reduce((m, g) => Math.max(m, g.heightDb || 0), 0);
     const air = segments.filter((g) => g.kind === 'air').length;
-    const drags = segments.filter((g) => g.kind === 'drag'), breaths = segments.filter((g) => g.kind === 'breath');
+    // רצף רחב-פס (אנרגיה מעל 1 kHz) אינו גרירה דרך הקיר (לגרירות אמיתיות אין תדרים גבוהים): איוושה, נשיפה, רעש בחדר
+    const drags = segments.filter((g) => g.kind === 'drag' && !g.broadband), breaths = segments.filter((g) => g.kind === 'breath');
     if (clicks >= 2) return 'handling';
     if (knocks >= 2 || (knocks === 1 && loudest >= 20)) return drags.length ? 'bangdrag' : 'bang';
-    if (knocks === 1 && air + breaths.length + drags.filter((g) => g.soft).length >= 2) return 'breath';
-    if (knocks === 1) return 'noise'; // דפיקה בודדת חלשה: לא רצף של השכן
+    if (knocks === 1 && air + breaths.length + drags.filter((g) => g.soft).length >= 2 && !drags.some((g) => !g.soft)) return 'breath';
+    if (knocks === 1) return drags.length ? 'drag' : 'noise'; // דפיקה בודדת חלשה: לא רצף של השכן; עם גרירה לידה זו גרירה
     if (clicks === 1 && !air && !drags.length && !breaths.length) return 'handling';
-    const hard = drags.filter((g) => !g.soft), softSec = drags.filter((g) => g.soft).reduce((a, g) => a + g.dur, 0);
-    const breathSec = breaths.reduce((a, g) => a + g.dur, 0) + softSec, dragSec = hard.reduce((a, g) => a + g.dur, 0);
-    if ((air || breaths.length || softSec) && breathSec >= dragSec) return 'breath';
-    return 'noise';
+    // רצף נשימה ברור (שלושה מקטעי אוויר/נשימה ומעלה) בלי גרירה "קשה" (25% פס אמצע ומעלה): גרירות רכות בתוכו הן נשימות כבדות
+    const hardDrag = drags.some((g) => !g.soft);
+    if (drags.length && !(air + breaths.length >= 3 && !hardDrag)) return 'drag';
+    if (air || breaths.length) return 'breath';
+    return drags.length ? 'drag' : 'noise';
   }
 
   // ---------- רעש מחזורי (נשימות): רצף אירועים במרווחים קבועים ----------
@@ -741,7 +745,7 @@
     const W = 6;
     for (let k = 0; k + W <= items.length; k++) {
       const win = items.slice(k, k + W);
-      if (win.some((w) => w.dur > 12 || w.kind === 'bang' || w.kind === 'bangdrag' || w.kind === 'speech' || w.kind === 'handling')) continue;
+      if (win.some((w) => w.dur > 12 || w.kind === 'bang' || w.kind === 'bangdrag' || w.kind === 'drag' || w.kind === 'speech' || w.kind === 'handling')) continue;
       const peaks = win.map((w) => w.peak).filter((v) => typeof v === 'number');
       if (peaks.length && Math.max(...peaks) - Math.min(...peaks) > 10) continue; // רמות דומות, כמו נשימות; דפיקה חזקה באמצע שוברת את הרצף
       const iv = []; for (let j = 1; j < W; j++) iv.push(win[j].t - win[j - 1].t);
@@ -853,8 +857,8 @@
     const segs = [...((a.cls && a.cls.segments) || []), ...((b.cls && b.cls.segments) || [])];
     if (segs.length) return kindFromSegments(segs);
     const bangs = [a, b].filter((e) => e.kind === 'bang' || e.kind === 'bangdrag').length;
-    const drags = [a, b].filter((e) => e.kind === 'noise' || e.kind === 'bangdrag').length;
-    return [a, b].some((e) => e.kind === 'handling') ? 'handling' : bangs && drags ? 'bangdrag' : bangs ? 'bang' : drags ? 'noise' : (a.kind || b.kind || 'unknown');
+    const drags = [a, b].filter((e) => e.kind === 'drag' || e.kind === 'bangdrag').length;
+    return [a, b].some((e) => e.kind === 'handling') ? 'handling' : bangs && drags ? 'bangdrag' : bangs ? 'bang' : drags ? 'drag' : (a.kind || b.kind || 'unknown');
   }
   function keepsApart(e) { return e.kind === 'breath' || e.kind === 'speech' || !!e.rhythmic; }
   function mergeTwo(a, b) {

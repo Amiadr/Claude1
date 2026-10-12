@@ -97,7 +97,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
   assert(/WAV/.test(r.fmt) && r.dur === '00:00:40', `wav: format/duration shown (${r.fmt}; ${r.dur})`);
   assert(near(r.thr, 48, 2), `wav: suggested threshold ≈ floor+8 (${r.thr}, floor ${r.floor})`);
   assert(r.selected === 2 && /2 מסומנים/.test(r.summary), `wav: 2 of 3 selected after unchecking the drag (${r.summary})`);
-  checkSaved('wav', r, localMs(2026, 9, 26, 23, 0, 0), 0.06, [5, 25], ['bang', 'noise', 'bang']);
+  checkSaved('wav', r, localMs(2026, 9, 26, 23, 0, 0), 0.06, [5, 25], ['bang', 'drag', 'bang']);
   assert(r.progressAfterReview && r.progressAfterSave, 'ui: progress bar sits under the button that started the step (review, save)');
   await page.screenshot({ path: path.join(outDir, 'shot-import.png'), fullPage: true });
 
@@ -105,25 +105,25 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
   r = await importFile('speech_2026-09-27_00-00-00.wav', { clickNoSpeech: true, play: false });
   assert(r.review && r.review.length === 4 && r.review[3].kind === 'speech', `speech: 4th event classified as speech (${r.review && r.review.map((x) => x.kind).join('/')})`);
   assert(r.selected === 3 && /1 נשמעים כדיבור/.test(r.summary), `speech: "deselect speech" left 3 selected (${r.summary})`);
-  checkSaved('speech', r, localMs(2026, 9, 27, 0, 0, 0), 0.06, [5, 12, 25], ['bang', 'noise', 'bang', 'speech']);
+  checkSaved('speech', r, localMs(2026, 9, 27, 0, 0, 0), 0.06, [5, 12, 25], ['bang', 'drag', 'bang', 'speech']);
   await page.screenshot({ path: path.join(outDir, 'shot-review.png'), fullPage: true });
 
   // ---- MP3: WebCodecs ב-worker ----
   r = await importFile('rec_20260926_230000.mp3', { play: false });
   assert(/^2026-09-26T23:00(:00)?$/.test(r.start), `mp3: start from yyyymmdd_hhmmss name (${r.start})`);
-  checkSaved('mp3', r, localMs(2026, 9, 26, 23, 0, 0), 0.15, [5, 12, 25], ['bang', 'noise', 'bang']);
+  checkSaved('mp3', r, localMs(2026, 9, 26, 23, 0, 0), 0.15, [5, 12, 25], ['bang', 'drag', 'bang']);
 
   // ---- OGG/Opus: פענוח מלא בדף הראשי, זמן ידני ----
   r = await importFile('test.ogg', { start: '2026-09-27T01:30:40', mode: 'end', play: false });
   assert(/עדיין לא ידוע/.test(r.range), `ogg: end-mode with unknown duration defers the start time (${r.range})`);
-  checkSaved('ogg (end mode)', r, localMs(2026, 9, 27, 1, 30, 0), 0.15, [5, 12, 25], ['bang', 'noise', 'bang']);
+  checkSaved('ogg (end mode)', r, localMs(2026, 9, 27, 1, 30, 0), 0.15, [5, 12, 25], ['bang', 'drag', 'bang']);
   const rangeAfter = await page.$eval('#impRange', (el) => el.textContent);
   assert(/27\.09\.2026 01:30:00 עד 27\.09\.2026 01:30:40/.test(rangeAfter), `ogg: range computed from end time after scan (${rangeAfter})`);
 
   // ---- M4A/AAC: תלוי בקודקים של הדפדפן (Chromium ללא AAC → שגיאה מסודרת) ----
   r = await importFile('Voice 001.m4a', { play: false });
   if (r.error) { console.log('m4a: decode not available in this browser build →', r.error); assert(/לפענח/.test(r.error), 'm4a: graceful Hebrew error'); }
-  else { assert(/^2026-09-26T23:00(:00)?$/.test(r.start), `m4a: start from mvhd creation_time (${r.start})`); checkSaved('m4a', r, localMs(2026, 9, 26, 23, 0, 0), 0.15, [5, 12, 25], ['bang', 'noise', 'bang']); }
+  else { assert(/^2026-09-26T23:00(:00)?$/.test(r.start), `m4a: start from mvhd creation_time (${r.start})`); checkSaved('m4a', r, localMs(2026, 9, 26, 23, 0, 0), 0.15, [5, 12, 25], ['bang', 'drag', 'bang']); }
 
   // ---- CSV עם עמודות מקור ----
   const csv = await page.evaluate(() => window.__noiseLog.eventsCsv(window.__noiseLog.events));
@@ -143,9 +143,9 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     await page.click('#impReviewBtn');
     await page.waitForFunction(() => !document.querySelector('#impReview').hidden, null, { timeout: 120000 });
     const rev = await page.evaluate(() => window.__noiseLog.importState.review.map((r) => ({ kind: r.kind, rhythmic: !!r.rhythmic, t: r.noiseSec, peak: window.__noiseLog.disp(r.peakDb), segs: r.cls.segments.map((g) => g.kind).join(',') })));
-    const bangs = rev.filter((r) => r.kind === 'bang'), breaths = rev.filter((r) => r.kind === 'breath'), noises = rev.filter((r) => r.kind === 'noise');
+    const bangs = rev.filter((r) => r.kind === 'bang'), breaths = rev.filter((r) => r.kind === 'breath'), noises = rev.filter((r) => r.kind === 'drag');
     assert(bangs.length === 1 && Math.abs(bangs[0].t - 20) < 0.2, `breath: the wall thump at 20 s is tagged bang (${bangs.map((b) => b.t.toFixed(1)).join(',')})`);
-    assert(noises.length === 1 && Math.abs(noises[0].t - 40) < 0.2, `breath: the drag at 40 s is tagged sustained noise (${noises.map((b) => b.t.toFixed(1) + ':' + b.segs).join(',')})`);
+    assert(noises.length === 1 && Math.abs(noises[0].t - 40) < 0.2, `breath: the drag at 40 s is tagged drag (${noises.map((b) => b.t.toFixed(1) + ':' + b.segs).join(',')})`);
     assert(breaths.length === rev.length - 2 && breaths.every((b) => b.rhythmic || b.segs.includes('breath')), `breath: all ${breaths.length} others tagged breath (rhythmic: ${breaths.filter((b) => b.rhythmic).length})`);
     await page.click('#impSelNoBreath');
     assert((await page.evaluate(() => window.__noiseLog.importState.review.filter((r) => r.selected).length)) === 2, 'breath: "deselect breaths" leaves bang + drag selected');

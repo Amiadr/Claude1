@@ -8,8 +8,8 @@ const path = require('path');
 require(path.resolve(__dirname, '..', 'docs', 'scan.js'));
 const NS = globalThis.NoiseScan;
 
-const LABEL_EXPECT = { wall: ['bang', 'bangdrag'], drag: ['noise', 'bangdrag'], chair: ['bang', 'bangdrag'], breath: ['breath'], speech: ['speech'], handling: ['handling'], background: ['noise', 'breath', 'handling'], other: [] };
-const KIND_HE = { bang: 'דפיקה', bangdrag: 'דפיקה+גרירה', handling: 'ליד המכשיר', noise: 'רעש רציף', breath: 'נשימה', speech: 'דיבור', unknown: 'לא ידוע' };
+const LABEL_EXPECT = { wall: ['bang', 'bangdrag'], drag: ['drag', 'bangdrag'], chair: ['bang', 'bangdrag'], breath: ['breath'], speech: ['speech'], handling: ['handling'], background: ['noise', 'breath', 'handling'], other: [] };
+const KIND_HE = { bang: 'דפיקה', bangdrag: 'דפיקה+גרירה', drag: 'גרירה', handling: 'ליד המכשיר', noise: 'רעש רציף', breath: 'נשימה', speech: 'דיבור', unknown: 'לא ידוע' };
 
 // קורא ZIP שנכתב בלי דחיסה (כמו makeZip באפליקציה): רשומות מקומיות ברצף
 function readZip(buf) {

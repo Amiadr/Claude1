@@ -116,7 +116,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     const lowNoise = (len, fc = 700) => { let y = Float32Array.from({ length: len }, () => gauss()); y = new NS.Biquad('lowpass', fc, sr).run(y); new NS.Biquad('lowpass', fc, sr).run(y, y); let ss = 0; for (const v of y) ss += v * v; const k = 1 / Math.sqrt(ss / len); for (let i = 0; i < len; i++) y[i] *= k; return y; };
     const drag = mk(6); for (let i = 0; i < drag.length; i++) drag[i] = 0.001 * gauss(); { const dn = lowNoise(2 * sr); for (let i = 0; i < 2 * sr; i++) drag[2 * sr + i] = 0.056 * dn[i]; }
     const cd = NS.classify(drag, sr);
-    assert(cd.kind === 'noise', `classify: drag → ${cd.kind} (voiced ${cd.voicedFrac.toFixed(2)}, loud ${cd.loudSec.toFixed(2)}s)`);
+    assert(cd.kind === 'drag', `classify: drag → ${cd.kind} (voiced ${cd.voicedFrac.toFixed(2)}, loud ${cd.loudSec.toFixed(2)}s)`);
     const sp = mk(6.5); for (let i = 0; i < sp.length; i++) sp[i] = 0.001 * gauss();
     { let phase = 0; for (let i = 0; i < 2.5 * sr; i++) { const t = i / sr; const f0 = 100 + 80 * (0.5 + 0.5 * Math.sin(2 * Math.PI * 0.7 * t)); phase += (2 * Math.PI * f0) / sr; let v = 0; for (let h = 1; h <= 12; h++) v += Math.sin(h * phase) / Math.sqrt(h); const syl = Math.pow(0.5 + 0.5 * Math.sin(2 * Math.PI * 4 * t), 2); sp[2 * sr + i] += 0.1 * v * syl; } } // הרמוניות כמו פורמנטים: רוב האנרגיה מעל 300 Hz
     const cs = NS.classify(sp, sr);
@@ -126,7 +126,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     assert(cr.kind !== 'speech', `classify: ringing thump (constant 120 Hz) → ${cr.kind}, not speech (pitchVar ${cr.pitchVar.toFixed(3)}, onsets ${cr.onsets})`);
     const hum = mk(5); for (let i = 0; i < hum.length; i++) hum[i] = 0.001 * gauss(); for (let i = 0; i < 3 * sr; i++) { const t = i / sr; hum[sr + i] += 0.1 * (Math.sin(2 * Math.PI * 100 * t) + 0.5 * Math.sin(2 * Math.PI * 200 * t) + 0.9 * Math.sin(2 * Math.PI * 600 * t) + 0.8 * Math.sin(2 * Math.PI * 750 * t)); } // זמזום מנוע עם הרמוניות גם מעל 300 Hz
     const ch = NS.classify(hum, sr);
-    assert(ch.kind === 'noise', `classify: steady hum → ${ch.kind} (voiced ${ch.voicedFrac.toFixed(2)}, pitchVar ${ch.pitchVar.toFixed(3)})`);
+    assert(ch.kind === 'drag', `classify: steady motor hum (mid-band harmonics) → ${ch.kind}, not speech (voiced ${ch.voicedFrac.toFixed(2)}, pitchVar ${ch.pitchVar.toFixed(3)})`);
     const t0 = Date.now(); NS.classify(mk(120), sr); const ms = Date.now() - t0;
     assert(ms < 4000, `classify: 120 s clip in ${ms} ms`);
     // נשימה: איוושה בתדרים גבוהים עם עלייה ודעיכה איטיות (1.5 שניות)
@@ -148,7 +148,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     const cbd = NS.classify(bd, sr);
     assert(cbd.kind === 'bangdrag' && cbd.segments.map((g) => g.kind).join(',') === 'bang,drag', `classify: bang then drag → ${cbd.kind} [${cbd.segments.map((g) => g.kind + '@' + g.sec).join(', ')}]`);
     // גרירה לבד עדיין רעש רציף; דפיקה קצרה עדיין דפיקה (עם המסווג החדש)
-    assert(NS.classify(drag, sr).kind === 'noise' && NS.classify(bang, sr).kind === 'bang', 'classify: drag → noise, short bang → bang (unchanged)');
+    assert(NS.classify(drag, sr).kind === 'drag' && NS.classify(bang, sr).kind === 'bang', 'classify: drag → drag, short bang → bang (unchanged)');
     // דפיקה שקטה דרך הקיר: רק 12 dB מעל רקע "חי" (לא לבן). בעבר כל הקליפ נחשב רועש והיא סווגה כרעש רציף
     const quiet = mk(6); for (let i = 0; i < quiet.length; i++) quiet[i] = 0.004 * gauss();
     for (let i = 0; i < 0.4 * sr; i++) { const t = i / sr; quiet[3 * sr + i] += 0.025 * (Math.sin(2 * Math.PI * 90 * t) + 0.5 * Math.sin(2 * Math.PI * 140 * t) + 1.0 * Math.sin(2 * Math.PI * 430 * t) * Math.exp(-4 * t)) * Math.exp(-8 * t) * Math.min(1, t / 0.04); }
@@ -175,18 +175,18 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     // כיסא בודד שנטרק (דפיקה אחת חזקה, 20 dB ומעלה מעל הרקע) הוא כן אירוע דפיקה
     const chairOnly = mk(5); for (let i = 0; i < chairOnly.length; i++) chairOnly[i] = 0.004 * gauss(); { const cn = lowNoise(Math.round(0.5 * sr)); for (let i = 0; i < 0.5 * sr; i++) { const t = i / sr; chairOnly[Math.round(2 * sr) + i] += 0.9 * (Math.sin(2 * Math.PI * 70 * t) + 0.9 * cn[i]) * Math.exp(-9 * t) * Math.min(1, t / 0.01); } }
     assert(NS.classify(chairOnly, sr).kind === 'bang', `classify: one loud chair slam alone → ${NS.classify(chairOnly, sr).kind}`);
-    // גרירה לבד, בלי דפיקה לפניה: רעש רציף (לא נשימה), כי יש בה אנרגיה ב-300–1000 Hz
+    // גרירה לבד, בלי דפיקה לפניה: גרירה (לא נשימה), כי יש בה אנרגיה ב-300–1000 Hz
     const dragOnly = mk(6); for (let i = 0; i < dragOnly.length; i++) dragOnly[i] = 0.004 * gauss(); { const dn = lowNoise(Math.round(1.5 * sr)); for (let i = 0; i < dn.length; i++) dragOnly[Math.round(2 * sr) + i] += 0.03 * dn[i]; }
     const cdo = NS.classify(dragOnly, sr);
-    assert(cdo.kind === 'noise' && cdo.segments.length === 1 && cdo.segments[0].kind === 'drag', `classify: drag without knocks → ${cdo.kind} [${cdo.segments.map((g) => g.kind + ' mf' + g.mfRatio).join(', ')}]`);
+    assert(cdo.kind === 'drag' && cdo.segments.length === 1 && cdo.segments[0].kind === 'drag', `classify: drag without knocks → ${cdo.kind} [${cdo.segments.map((g) => g.kind + ' mf' + g.mfRatio).join(', ')}]`);
     // גרירה של 1.5 שניות אחרי הכיסא: דפיקה + גרירה, והגרירה נמדדת בנפרד מהזנב של הטריקה
     const chairDrag = Float32Array.from(mixed); { const dn = lowNoise(Math.round(1.5 * sr)); for (let i = 0; i < dn.length; i++) chairDrag[Math.round(7.2 * sr) + i] += 0.02 * dn[i]; }
     const ccd = NS.classify(chairDrag, sr);
     assert(ccd.kind === 'bangdrag' && ccd.knocks === 4 && ccd.segments.filter((g) => g.kind === 'drag').length === 1 && near(ccd.segments.find((g) => g.kind === 'drag').sec, 7.2, 0.15), `classify: knocks + chair + drag → ${ccd.kind} [${ccd.segments.map((g) => g.kind + '@' + g.sec.toFixed(1)).join(', ')}]`);
-    // רקע שעולה לאט (מכונית עוברת): רעש רציף, בלי דפיקות
+    // רקע שעולה לאט (מכונית עוברת): רצף עם פס אמצע → גרירה (עדיף לתפוס גרירה אחת יותר מדי), בלי דפיקות
     const swell = mk(8); for (let i = 0; i < swell.length; i++) swell[i] = 0.004 * gauss(); { const dn = lowNoise(Math.round(4 * sr)); for (let i = 0; i < dn.length; i++) { const t = i / dn.length; swell[Math.round(2 * sr) + i] += 0.02 * dn[i] * Math.sin(Math.PI * t); } }
     const csw = NS.classify(swell, sr);
-    assert(csw.kind === 'noise' && csw.knocks === 0, `classify: slow swell → ${csw.kind}, ${csw.knocks} knocks`);
+    assert(csw.kind === 'drag' && csw.knocks === 0, `classify: slow swell → ${csw.kind}, ${csw.knocks} knocks`);
     // טיפול בטלפון: נקישות רחבות-פס (אנרגיה מעל 1 kHz) ליד המיקרופון, בין דפיקות בתדרים נמוכים. לא דרך הקיר
     const handling = Float32Array.from(knocks);
     for (const at of [2.5, 3.6, 5.0]) for (let i = 0; i < 0.04 * sr; i++) { const t = i / sr; handling[Math.round(at * sr) + i] += 0.15 * gauss() * Math.exp(-120 * t); }
@@ -199,8 +199,8 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
       const cs = NS.classify(small, 8000, { envelope: true });
       assert(cs.kind === 'bang' && cs.knocks === 4 && cs.envelope.length > 800 && cs.envelopeStepMs === 10 && Math.max(...cs.envelope) > 40, `resample: classification of the 8 kHz clip unchanged (${cs.kind}, ${cs.knocks} knocks), envelope exported (${cs.envelope.length} × ${cs.envelopeStepMs}ms)`); }
     // איחוד אירועים צמודים אחרי הסיווג
-    const ev = (startSec, endSec, kind, extra) => Object.assign({ startSec, noiseSec: startSec + 2, endSec, peakDb: -40, avgDb: -55, truncated: false, kind, selected: true, cls: { kind, segments: [{ kind: kind === 'noise' ? 'drag' : 'bang', sec: 2, dur: 0.3 }], loudSec: 0.3, knocks: kind === 'noise' ? 0 : 1 } }, extra || {});
-    const rev = [ev(10, 16, 'bang', { peakDb: -30 }), ev(16, 20.5, 'bang'), ev(20.5, 24, 'noise'), ev(30, 36, 'noise'), ev(36, 40, 'breath'), ev(40, 44, 'noise'), ev(44, 48, 'noise', { rhythmic: true }), ev(48, 52, 'speech')];
+    const ev = (startSec, endSec, kind, extra) => Object.assign({ startSec, noiseSec: startSec + 2, endSec, peakDb: -40, avgDb: -55, truncated: false, kind, selected: true, cls: { kind, segments: [{ kind: kind === 'drag' ? 'drag' : 'bang', sec: 2, dur: 0.3, mfRatio: 0.3 }], loudSec: 0.3, knocks: kind === 'drag' ? 0 : 1 } }, extra || {});
+    const rev = [ev(10, 16, 'bang', { peakDb: -30 }), ev(16, 20.5, 'bang'), ev(20.5, 24, 'drag'), ev(30, 36, 'drag'), ev(36, 40, 'breath'), ev(40, 44, 'drag'), ev(44, 48, 'drag', { rhythmic: true }), ev(48, 52, 'speech')];
     const m = NS.mergeAdjacent(rev, { maxClip: 120 });
     assert(m.length === 6 && m[0].startSec === 10 && m[0].endSec === 24 && m[0].kind === 'bangdrag' && m[0].merged === 3 && m[0].peakDb === -30 && m[0].noiseSec === 12, `merge: 3 contiguous events → one bangdrag 10–24 (got ${m.map((e) => `${e.kind} ${e.startSec}-${e.endSec}`).join(', ')})`);
     assert(m[0].cls.segments.length === 3 && m[0].cls.segments[2].sec === 12.5 && near(m[0].cls.loudSec, 0.9, 1e-9) && m[0].cls.knocks === 2, `merge: segments concatenated with offsets (${JSON.stringify(m[0].cls.segments.map((g) => g.sec))})`);
