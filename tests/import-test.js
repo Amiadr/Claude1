@@ -164,6 +164,18 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     }
     await page.click('#revKinds button[data-kind="breath"]');
     assert((await page.$$eval('#impReviewList li.rev', (els) => els.length)) === 2 && (await page.$eval('#revShown', (el) => el.textContent)) === '2', 'breath: kind filter hides breaths from the list');
+    // סימון לפי הסינון: "בחר הכל" מסמן גם מוסתרים (והסיכום אומר כמה), "סמן רק את המוצגים" משאיר רק את הסוגים שנבחרו
+    {
+      const selected = () => page.evaluate(() => window.__noiseLog.importState.review.filter((r) => r.selected).map((r) => r.kind));
+      await page.click('#impSelAll');
+      assert((await selected()).length === rev.length && /\(\d+ מהם מוסתרים בסינון\)/.test(await page.$eval('#impReviewSummary', (el) => el.textContent)), 'select: "select all" also selects hidden events and the summary says how many are hidden');
+      await page.click('#impSelOnlyShown');
+      assert(JSON.stringify((await selected()).sort()) === JSON.stringify(['bang', 'drag']) && !/מוסתרים בסינון/.test(await page.$eval('#impReviewSummary', (el) => el.textContent)), 'select: "select only shown" leaves exactly the filtered kinds selected');
+      await page.click('#impClearShown');
+      assert((await selected()).length === 0, 'select: "clear shown" leaves nothing selected');
+      await page.click('#impSelShown');
+      assert(JSON.stringify((await selected()).sort()) === JSON.stringify(['bang', 'drag']), 'select: "select shown" selects the filtered kinds only');
+    }
     // מיון לפי רמה: הדפיקה ראשונה
     await page.check('input[name="revSort"][value="level"]');
     const firstKind = await page.$eval('#impReviewList li.rev:first-child .tag', (el) => el.textContent);

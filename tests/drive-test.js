@@ -116,7 +116,7 @@ const mockState = async () => (await fetch(`http://127.0.0.1:${MOCK}/__state`)).
   assert(ev.every((e) => /2026-10-01/.test(e.fileName) && new Date(e.noiseTs).getUTCMonth() === 8 && new Date(e.noiseTs).getUTCDate() === 30), 'B: remote events carry the corrected October times and names');
   assert(await B.page.$$eval('#events .tag.cloud', (els) => els.map((e) => e.textContent)).then((t) => t.every((x) => /מ-Drive · טלפון/.test(x))), 'B: cards show "from Drive · טלפון"');
   await B.page.click('#events li.event:first-child button[data-act="play"]');
-  await B.page.waitForSelector('#events li.event:first-child .player audio', { timeout: 20000 });
+  await B.page.waitForSelector('#events li.event:first-child .player audio', { state: 'attached', timeout: 20000 }); // הנגן מצייר צורת גל; תג האודיו עצמו מוסתר
   assert(await B.page.$eval('#events li.event:first-child .player audio', (a) => a.src.startsWith('blob:')), 'B: remote clip downloaded and playable');
   ev = await localEvents(B);
   assert(ev.filter((e) => e.hasBlob).length === 1, 'B: downloaded clip cached locally');

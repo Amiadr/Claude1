@@ -237,8 +237,8 @@
     <h2 style="margin-top:14px">סקירה לפני שמירה</h2>
     <div id="impReviewSummary" class="muted"></div>
     <div class="row" style="margin:8px 0">
-      <button id="impSelAll" class="btn small">בחר הכל</button>
-      <button id="impSelNone" class="btn small">נקה הכל</button>
+      <button id="impSelShown" class="btn small" title="מסמן לשמירה רק את האירועים שמוצגים עכשיו (אחרי סינון לפי סוג ורמה), בלי לגעת בשאר">סמן את המוצגים</button>
+      <button id="impClearShown" class="btn small" title="מבטל את הסימון של האירועים שמוצגים עכשיו, בלי לגעת בשאר">בטל סימון של המוצגים</button>
       <button id="impSelNoBreath" class="btn small">בטל סימון נשימות</button>
       <button id="impSelNoSpeech" class="btn small">בטל סימון של "ייתכן דיבור"</button>
       <button id="impAnalysisBtn" class="btn small" title="ערכה קטנה לכיול המסווג מהקטעים שתויגו כאן ב'מה זה באמת?', בלי לשמור אותם ביומן">ייצוא לניתוח (מתויגים)</button>
@@ -253,7 +253,7 @@
         <label><input type="radio" name="revSort" id="revSortTime" value="time" checked> לפי זמן</label>
         <label><input type="radio" name="revSort" value="level"> החזקים קודם</label>
       </div>
-      <div class="row" style="margin-top:8px"><span class="muted">מוצגים <b id="revShown">0</b></span><button id="impSelShown" class="btn small">סמן את המוצגים</button><button id="impClearShown" class="btn small">בטל סימון של המוצגים</button></div>
+      <div class="row" style="margin-top:8px"><span class="muted">מוצגים <b id="revShown">0</b></span><button id="impSelOnlyShown" class="btn small" title="מסמן לשמירה את האירועים שמוצגים אחרי הסינון, ומבטל את הסימון של כל השאר">סמן רק את המוצגים</button><button id="impSelAll" class="btn small" title="מסמן את כל האירועים, גם מוסתרים בסינון">בחר הכל</button><button id="impSelNone" class="btn small">נקה הכל</button></div>
     </div>
     <ul id="impReviewList" class="revlist"></ul>
     <div class="row top"><button id="impSaveBtn" class="btn primary">💾 שמור <span id="impSelCount">0</span> אירועים מסומנים</button></div>
