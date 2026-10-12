@@ -580,12 +580,16 @@
   //   רעש רציף (גרירה, מנוע וכד') – רמה מוגבהת (6 dB ומעלה מעל הרקע) שנמשכת חצי שנייה ומעלה ואינה זנב של דפיקה
   //   נשימה  – רעש רציף בצורת גבעה: עלייה איטית ודעיכה איטית, 0.3–4 שניות, איוושה בתדרים גבוהים כמעט בלי תדרים נמוכים, לא קולי
   //   דיבור  – מחזוריות עם גובה צליל משתנה והברות (נמדד על כל הקליפ)
-  //   רעש ליד המכשיר – נקישות או שפשוף רחבי-פס (10% ומעלה מהאנרגיה מעל 1 kHz): טיפול בטלפון, חפץ שנופל בחדר.
+  //   רעש ליד המכשיר – נקישות רחבות-פס (10% ומעלה מהאנרגיה מעל 1 kHz): טיפול בטלפון, חפץ שנופל בחדר.
   //            דפיקה או גרירה דרך הקיר והרצפה מגיעות כמעט בלי תדרים גבוהים, ולכן זה מבדיל "דרך הקיר" מ"ליד המכשיר".
+  //   אוויר   – שיא או רצף שכמעט כל האנרגיה שלו מתחת ל-300 Hz: הבל נשימה על המיקרופון, לא דפיקה. דפיקה דרך הקיר
+  //            מביאה איתה "טוק" ב-300–1000 Hz (15% ומעלה מהאנרגיה); נשימה כמעט אף פעם לא (נמדד על הקלטות מתויגות).
   // רקע: מה שנשאר מתחת ל-6 dB מעל רמת הרקע לא נספר בכלל, בלי קשר לעוצמה המוחלטת של הקליפ.
   // התוצאה היא רמז לסקירה, לא זיהוי ודאי.
   const HIGH_BAND_HZ = 1000; // "רחב-פס": רעש עם אנרגיה מעל 1 kHz נוצר ליד המכשיר; מה שעובר דרך קיר או רצפה כמעט בלי תדרים כאלה
   const BROADBAND = 0.1;     // חלק האנרגיה מעל 1 kHz שממנו מקטע נחשב רחב-פס
+  const KNOCK_MID = 0.15;    // חלק האנרגיה ב-300–1000 Hz שממנו שיא הוא דפיקה (מתחת ל-0.10: אוויר; בין לבין: דפיקה חלשה, נספרת רק לצד דפיקה ברורה)
+  const AIR_MID = 0.10;
   const LOUD_DB = 6;       // מעל הרקע: מכאן "רועש"
   const KNOCK_MIN_DB = 8;  // גובה מזערי של דפיקה מעל הרקע (בליטות קטנות של הרקע לא נספרות)
   const KNOCK_PROM_DB = 6; // בליטות השיא מעל מה שלפניו
@@ -601,22 +605,23 @@
     mean /= n; for (let i = 0; i < n; i++) x[i] -= mean;
     const lo = new Biquad('lowpass', LOW_BAND_HZ, r).run(x); new Biquad('lowpass', LOW_BAND_HZ, r).run(lo, lo);
     const hi = new Biquad('highpass', HIGH_BAND_HZ, r).run(x); new Biquad('highpass', HIGH_BAND_HZ, r).run(hi, hi);
+    const mid = new Biquad('highpass', LOW_BAND_HZ, r).run(x); new Biquad('highpass', LOW_BAND_HZ, r).run(mid, mid); new Biquad('lowpass', HIGH_BAND_HZ, r).run(mid, mid); new Biquad('lowpass', HIGH_BAND_HZ, r).run(mid, mid);
     const frame = Math.round(r * 0.03), hop = Math.round(r * 0.01); // חלון 30ms, צעד 10ms
     const nf = Math.max(0, Math.floor((n - frame) / hop) + 1);
     if (nf < 3) return empty;
     const sec = (f) => (f * hop) / r, ms = (frames) => Math.round((frames * hop * 1000) / r);
-    const rms = new Float32Array(nf), db = new Float32Array(nf), eLo = new Float32Array(nf), eHi = new Float32Array(nf);
+    const rms = new Float32Array(nf), db = new Float32Array(nf), eLo = new Float32Array(nf), eHi = new Float32Array(nf), eMid = new Float32Array(nf);
     let peakAbs = 0;
     for (let f = 0; f < nf; f++) {
       let a = 0, b = 0, c = 0; const o = f * hop;
-      for (let i = 0; i < frame; i++) { const v = x[o + i]; a += v * v; const w = lo[o + i]; b += w * w; const u = hi[o + i]; c += u * u; }
-      rms[f] = Math.sqrt(a / frame); db[f] = 10 * Math.log10(a / frame + 1e-12); eLo[f] = b / frame; eHi[f] = c / frame;
+      let m = 0; for (let i = 0; i < frame; i++) { const v = x[o + i]; a += v * v; const w = lo[o + i]; b += w * w; const u = hi[o + i]; c += u * u; const z = mid[o + i]; m += z * z; }
+      rms[f] = Math.sqrt(a / frame); db[f] = 10 * Math.log10(a / frame + 1e-12); eLo[f] = b / frame; eHi[f] = c / frame; eMid[f] = m / frame;
     }
     for (let i = 0; i < n; i++) { const a = Math.abs(x[i]); if (a > peakAbs) peakAbs = a; }
     // רקע הקליפ: אחוזון 15 של הפריימים (הקליפ כולל שקט לפני הרעש ואחריו). E = דציבלים מעל הרקע
     const sorted = Float32Array.from(db).sort(); const floorDb = sorted[Math.floor(nf * 0.15)];
     const E = new Float32Array(nf); for (let f = 0; f < nf; f++) E[f] = Math.max(0, db[f] - floorDb);
-    const bandRatios = (a, b) => { let sl = 0, sh = 0, sa = 0; for (let f = a; f <= b; f++) { sl += eLo[f]; sh += eHi[f]; sa += rms[f] * rms[f]; } return { lfRatio: Math.round((sl / Math.max(sa, 1e-12)) * 100) / 100, hfRatio: Math.round((sh / Math.max(sa, 1e-12)) * 100) / 100 }; };
+    const bandRatios = (a, b) => { let sl = 0, sh = 0, sm = 0, sa = 0; for (let f = a; f <= b; f++) { sl += eLo[f]; sh += eHi[f]; sm += eMid[f]; sa += rms[f] * rms[f]; } return { lfRatio: Math.round((sl / Math.max(sa, 1e-12)) * 100) / 100, mfRatio: Math.round((sm / Math.max(sa, 1e-12)) * 100) / 100, hfRatio: Math.round((sh / Math.max(sa, 1e-12)) * 100) / 100 }; };
 
     // --- דפיקות: שיאים בולטים שעולים מהר ונעלמים מהר. מסומנים במסכה כדי שהזנב שלהם לא ייחשב רעש רציף ---
     const segments = []; const knockMask = new Uint8Array(nf); let knocks = 0;
@@ -632,10 +637,12 @@
       let after = 0, na = 0; for (let k = f + 15; k <= Math.min(nf - 1, f + 25); k++) { after += E[k]; na++; }
       const dropDb = na ? H - after / na : H; // כמה נמוך יותר 150–250ms אחרי השיא
       if (ms(f - a) > 100 || dropDb < 5) continue;
-      knocks++;
       for (let k = Math.max(0, a - 5); k <= Math.min(nf - 1, b + 10); k++) knockMask[k] = 1;
-      const bands = bandRatios(a, b);
-      segments.push(Object.assign({ kind: 'bang', sec: sec(a), dur: Math.max(0.05, Math.round((b - a + 1) * hop * 100 / r) / 100), heightDb: Math.round(H * 10) / 10, riseMs: ms(f - a), fallMs: ms(b - f), dropDb: Math.round(dropDb * 10) / 10, broadband: bands.hfRatio >= BROADBAND }, bands));
+      const bands = bandRatios(a, b); const broadband = bands.hfRatio >= BROADBAND;
+      const isAir = !broadband && bands.mfRatio < AIR_MID;                // רק מתחת ל-300 Hz: הבל אוויר על המיקרופון
+      const weak = !broadband && !isAir && bands.mfRatio < KNOCK_MID;     // פס אמצע חלש: נספר רק לצד דפיקה ברורה
+      if (!isAir && !weak && !broadband) knocks++; // דפיקות דרך הקיר; נקישות רחבות-פס נספרות בנפרד (broadband)
+      segments.push(Object.assign({ kind: isAir ? 'air' : 'bang', weak, sec: sec(a), dur: Math.max(0.05, Math.round((b - a + 1) * hop * 100 / r) / 100), heightDb: Math.round(H * 10) / 10, riseMs: ms(f - a), fallMs: ms(b - f), dropDb: Math.round(dropDb * 10) / 10, broadband }, bands));
     }
 
     // --- קוליות (לדיבור), על הפריימים הרועשים ---
@@ -679,9 +686,13 @@
       for (let f = rg.b - third + 1; f <= rg.b; f++) last += E[f];
       const humpDb = (mid - (first + last) / 2) / third; // גבעה: האמצע גבוה מהקצוות (בדציבלים)
       const riseMs = ms(peakF - rg.a); const bands = bandRatios(rg.a, rg.b); const vFrac = segVoiced / len;
-      const isBreath = dur <= 4 && riseMs >= 150 && humpDb >= 2 && bands.lfRatio < 0.2 && bands.hfRatio > 0.1 && vFrac < 0.3;
+      const hissBreath = dur <= 4 && riseMs >= 150 && humpDb >= 2 && bands.lfRatio < 0.2 && bands.hfRatio > 0.1 && vFrac < 0.3; // איוושה בתדרים גבוהים בצורת גבעה
+      const airBreath = bands.mfRatio < KNOCK_MID && bands.hfRatio < BROADBAND;                                              // רצף רק בתדרים נמוכים: הבל אוויר
+      const isBreath = hissBreath || airBreath;
       if (!isBreath && dur < DRAG_MIN_SEC) continue; // רצף קצר של רקע מוגבה, לא גרירה
-      segments.push(Object.assign({ kind: isBreath ? 'breath' : 'drag', sec: sec(rg.a), dur: Math.round(dur * 100) / 100, heightDb: Math.round(E[peakF] * 10) / 10, riseMs, humpDb: Math.round(humpDb * 10) / 10, broadband: !isBreath && bands.hfRatio >= BROADBAND }, bands));
+      // גרירה "רכה": קצת פס אמצע (15–25%) בלי תדרים גבוהים. לצד דפיקות זו גרירה; בלי דפיקות זו כנראה נשימה כבדה
+      const soft = !isBreath && bands.mfRatio < 0.25 && bands.hfRatio < BROADBAND;
+      segments.push(Object.assign({ kind: isBreath ? 'breath' : 'drag', soft, sec: sec(rg.a), dur: Math.round(dur * 100) / 100, heightDb: Math.round(E[peakF] * 10) / 10, riseMs, humpDb: Math.round(humpDb * 10) / 10, broadband: !isBreath && bands.hfRatio >= BROADBAND }, bands));
     }
     segments.sort((p, q) => p.sec - q.sec);
 
@@ -691,21 +702,34 @@
     let pitchVar = 0;
     if (lags.length >= 5) { const m = lags.reduce((a, b) => a + b, 0) / lags.length; const v = lags.reduce((a, b) => a + (b - m) * (b - m), 0) / lags.length; pitchVar = Math.sqrt(v) / m; }
     const onsets = rawOnsets;
-    const kind = voicedFrac >= 0.35 && loudSec >= 0.4 && pitchVar >= 0.06 && onsets >= 2 ? 'speech' : kindFromSegments(segments);
+    let midHi = 0, nLoud = 0; for (let f = 0; f < nf; f++) if (E[f] >= LOUD_DB) { midHi += (eMid[f] + eHi[f]) / Math.max(rms[f] * rms[f], 1e-12); nLoud++; } midHi = nLoud ? midHi / nLoud : 0;
+    // דיבור: מחזוריות עם גובה צליל משתנה והברות, וגם אנרגיה מעל 300 Hz (נחירה מחזורית בתדרים נמוכים אינה דיבור)
+    const kind = voicedFrac >= 0.35 && loudSec >= 0.4 && pitchVar >= 0.06 && onsets >= 2 && midHi >= 0.3 ? 'speech' : kindFromSegments(segments);
     const out = { kind, loudSec, voicedFrac, crestDb, pitchVar, onsets, knocks, broadband: segments.filter((g) => g.broadband).length, floorDb, segments };
     if (opts && opts.envelope) { out.envelopeStepMs = ms(1); out.envelope = Array.from(E, (v) => Math.round(v * 10) / 10); } // dB מעל הרקע, כל 10ms
     return out;
   }
-  // סוג האירוע לפי המקטעים שנמצאו בו (בלי דיבור, שנמדד על כל הקליפ)
+  // סוג האירוע לפי המקטעים שנמצאו בו (בלי דיבור, שנמדד על כל הקליפ):
+  //   דפיקה       – שתי דפיקות ומעלה (השכן דופק ברצף), או דפיקה אחת חזקה (20 dB ומעלה מעל הרקע, כמו כיסא שנטרק)
+  //   דפיקה+גרירה – דפיקות וגם רצף גרירה
+  //   ליד המכשיר  – שתי נקישות רחבות-פס ומעלה (או אחת כשאין שום דבר אחר)
+  //   נשימה/אוויר – בלי דפיקות, ורוב המקטעים הם אוויר או נשימה (גרירה "רכה" בלי דפיקות נחשבת נשימה); דפיקה בודדת חלשה בתוך נשימות היא נשימה
+  //   רעש רציף    – בלי דפיקות: רצפי גרירה (גם גרירה בלי דפיקות לפניה), דפיקה בודדת חלשה בלי הקשר (לא מעניינת), או כלום
   function kindFromSegments(segments) {
-    const knocks = segments.filter((g) => g.kind === 'bang').length, drags = segments.filter((g) => g.kind === 'drag').length, breaths = segments.filter((g) => g.kind === 'breath').length;
-    const broadband = segments.filter((g) => g.broadband).length;
-    const breathSec = segments.filter((g) => g.kind === 'breath').reduce((a, g) => a + g.dur, 0), sustainedSec = segments.filter((g) => g.kind !== 'bang').reduce((a, g) => a + g.dur, 0);
-    // שני מקטעים רחבי-פס (או אחד כשאין כמעט מקטעים אחרים): הרעש נוצר ליד המכשיר, לא מעבר לקיר
-    if (broadband >= 2 || (broadband >= 1 && knocks + drags <= 2)) return 'handling';
-    if (knocks && drags) return 'bangdrag';
-    if (knocks) return 'bang';
-    if (breaths && breathSec >= 0.7 * sustainedSec) return 'breath';
+    const peaks = segments.filter((g) => g.kind === 'bang');
+    const clicks = peaks.filter((g) => g.broadband).length;
+    let knocks = peaks.filter((g) => !g.broadband && !g.weak).length; if (knocks) knocks += peaks.filter((g) => g.weak && !g.broadband).length;
+    const loudest = peaks.reduce((m, g) => Math.max(m, g.heightDb || 0), 0);
+    const air = segments.filter((g) => g.kind === 'air').length;
+    const drags = segments.filter((g) => g.kind === 'drag'), breaths = segments.filter((g) => g.kind === 'breath');
+    if (clicks >= 2) return 'handling';
+    if (knocks >= 2 || (knocks === 1 && loudest >= 20)) return drags.length ? 'bangdrag' : 'bang';
+    if (knocks === 1 && air + breaths.length + drags.filter((g) => g.soft).length >= 2) return 'breath';
+    if (knocks === 1) return 'noise'; // דפיקה בודדת חלשה: לא רצף של השכן
+    if (clicks === 1 && !air && !drags.length && !breaths.length) return 'handling';
+    const hard = drags.filter((g) => !g.soft), softSec = drags.filter((g) => g.soft).reduce((a, g) => a + g.dur, 0);
+    const breathSec = breaths.reduce((a, g) => a + g.dur, 0) + softSec, dragSec = hard.reduce((a, g) => a + g.dur, 0);
+    if ((air || breaths.length || softSec) && breathSec >= dragSec) return 'breath';
     return 'noise';
   }
 

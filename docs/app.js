@@ -431,33 +431,43 @@
     currentFilter = sel.value;
   }
   const selectedIds = new Set();
-  const KIND_LABEL = { bang: 'דפיקה', bangdrag: 'דפיקה + גרירה', handling: 'ליד המכשיר', noise: 'רעש רציף', breath: 'נשימה', speech: 'ייתכן דיבור', unknown: 'לא ידוע' };
+  const KIND_LABEL = { bang: 'דפיקה', bangdrag: 'דפיקה + גרירה', handling: 'ליד המכשיר', noise: 'רעש רציף', breath: 'נשימה / אוויר', speech: 'ייתכן דיבור', unknown: 'לא ידוע' };
   const KIND_ORDER = ['bang', 'bangdrag', 'handling', 'noise', 'breath', 'speech', 'unknown'];
   // תיוג ידני "מה זה באמת?": האמת לצד הסיווג האוטומטי, כדי לאסוף דוגמאות לכיול המסווג (ייצוא לניתוח)
   const LABELS = { wall: 'דפיקה על הקיר', drag: 'גרירה', chair: 'כיסא', breath: 'נשימה', speech: 'דיבור', handling: 'טיפול בטלפון', background: 'רעש רקע', other: 'אחר' };
   // אילו סיווגים אוטומטיים נחשבים נכונים לכל תיוג (משמש גם את tests/eval-samples.js)
-  const LABEL_EXPECT = { wall: ['bang', 'bangdrag'], drag: ['noise', 'bangdrag'], chair: ['bang', 'bangdrag'], breath: ['breath'], speech: ['speech'], handling: ['handling'], background: ['noise'], other: [] };
-  function labelText(e) { return e.label ? (e.label === 'other' ? `אחר: ${e.labelText || ''}`.trim() : LABELS[e.label] || e.label) : ''; }
+  const LABEL_EXPECT = { wall: ['bang', 'bangdrag'], drag: ['noise', 'bangdrag'], chair: ['bang', 'bangdrag'], breath: ['breath'], speech: ['speech'], handling: ['handling'], background: ['noise', 'breath', 'handling'], other: [] };
+  // אפשר לסמן כמה תיוגים לאירוע (למשל דפיקה על הקיר וגם גרירה). labels: מערך; label: הראשון, לתאימות
+  function labelsOf(e) { return Array.isArray(e.labels) ? e.labels : (e.label ? [e.label] : []); }
+  function labelText(e) { const names = labelsOf(e).map((k) => (k === 'other' ? `אחר: ${e.labelText || ''}`.trim() : LABELS[k] || k)); return names.join(' + '); }
   function labelControl(e) {
-    const opts = Object.entries(LABELS).map(([k, v]) => `<option value="${k}" ${e.label === k ? 'selected' : ''}>${v}</option>`).join('');
-    return `<span class="label-box"><select class="label" data-act="label" title="תיוג ידני: מה זה באמת? נשמר לצד הסיווג האוטומטי ומיוצא לניתוח"><option value="">מה זה באמת?</option>${opts}</select><input class="label-text" data-act="labelText" placeholder="מה זה? (אם זיהית)" value="${escapeHtml(e.labelText || '')}" ${e.label === 'other' ? '' : 'hidden'}></span>`;
+    const on = new Set(labelsOf(e));
+    const chips = Object.entries(LABELS).map(([k, v]) => `<button type="button" class="chip lchip ${on.has(k) ? 'on' : ''}" data-act="label" data-label="${k}">${v}</button>`).join('');
+    return `<div class="label-box" title="תיוג ידני: מה זה באמת? אפשר לסמן כמה. נשמר לצד הסיווג האוטומטי ומיוצא לניתוח"><span class="muted">מה זה באמת?</span>${chips}<input class="label-text" data-act="labelText" placeholder="מה זה? (אם זיהית)" value="${escapeHtml(e.labelText || '')}" ${on.has('other') ? '' : 'hidden'}></div>`;
   }
-  // שינוי בפקד התיוג: מחזיר true אם טופל. onChange(field, value) מקבל 'label' או 'labelText'
+  // לחיצה על צ'יפ תיוג: מחזיר true אם טופל
+  function handleLabelClick(target, item) {
+    const chip = target.closest('button[data-act="label"]'); if (!chip) return false;
+    const k = chip.dataset.label, set = new Set(labelsOf(item)); if (set.has(k)) set.delete(k); else set.add(k);
+    item.labels = Object.keys(LABELS).filter((x) => set.has(x)); item.label = item.labels[0] || '';
+    chip.classList.toggle('on', set.has(k));
+    const box = chip.closest('.label-box').querySelector('.label-text'); box.hidden = !set.has('other'); if (k === 'other' && set.has(k)) box.focus();
+    return true;
+  }
   function handleLabelChange(target, item) {
-    const sel = target.closest('select[data-act="label"]'), txt = target.closest('input[data-act="labelText"]');
-    if (sel) { item.label = sel.value; const box = sel.closest('.label-box').querySelector('.label-text'); box.hidden = sel.value !== 'other'; if (sel.value === 'other') box.focus(); return true; }
-    if (txt) { item.labelText = txt.value.trim(); return true; }
-    return false;
+    const txt = target.closest('input[data-act="labelText"]'); if (!txt) return false;
+    item.labelText = txt.value.trim(); return true;
   }
-  const KIND_HINT = { handling: 'נקישות או שפשוף עם תדרים גבוהים, כמו טיפול בטלפון או חפץ שנופל בחדר. רעש דרך הקיר מגיע כמעט בלי תדרים כאלה' };
+  const KIND_HINT = { handling: 'נקישות עם תדרים גבוהים, כמו טיפול בטלפון או חפץ שנופל בחדר. רעש דרך הקיר מגיע כמעט בלי תדרים כאלה', breath: 'הבל נשימה על המיקרופון או איוושה: כמעט בלי אנרגיה ב-300–1000 Hz, בניגוד לדפיקה דרך הקיר', noise: 'רעש מתמשך, או דפיקה בודדת חלשה בלי רצף' };
   kindFilter = new Set(KIND_ORDER);
   function segText(cls) {
     if (!cls || !cls.segments || !cls.segments.length) return '';
-    const knocks = cls.segments.filter((g) => g.kind === 'bang').length, broadband = cls.segments.filter((g) => g.broadband).length;
+    const knocks = cls.segments.filter((g) => g.kind === 'bang' && !g.broadband).length, broadband = cls.segments.filter((g) => g.broadband).length, air = cls.segments.filter((g) => g.kind === 'air').length;
     const parts = knocks ? [knocks === 1 ? 'דפיקה' : `${knocks} דפיקות`] : [];
-    for (const g of cls.segments) if (g.kind !== 'bang') parts.push(`${{ drag: 'רעש רציף', breath: 'נשימה' }[g.kind] || g.kind} ${g.dur} שנ׳`);
+    for (const g of cls.segments) if (g.kind === 'drag' || g.kind === 'breath') parts.push(`${{ drag: 'רעש רציף', breath: 'נשימה' }[g.kind]} ${g.dur} שנ׳`);
+    if (air) parts.push(`${air} הבלי אוויר (רק תדרים נמוכים)`);
     if (broadband) parts.push(`${broadband} עם תדרים גבוהים (ליד המכשיר, לא דרך הקיר)`);
-    return 'מבנה: ' + parts.join(', ');
+    return parts.length ? 'מבנה: ' + parts.join(', ') : '';
   }
   // ---------- נגן עם צורת הגל ----------
   // מצייר את מעטפת הקליפ (דציבלים מעל רקע הקליפ, כמו במסווג) על קנבס, מסמן עליה את המקטעים שסווגו
@@ -476,22 +486,24 @@
     for (let i = 0; i < frames; i++) { let v = 0; for (let c = 0; c < fmt.channels; c++) v += dv.getInt16(data.offset + (i * fmt.channels + c) * 2, true); out[i] = v / (32768 * fmt.channels); }
     return { samples: out, sampleRate: fmt.sampleRate };
   }
-  const SEG_COLOR = { bang: 'rgba(245,158,11,.35)', drag: 'rgba(167,139,250,.30)', breath: 'rgba(148,163,184,.25)', broadband: 'rgba(251,113,133,.40)' };
+  const SEG_COLOR = { bang: 'rgba(245,158,11,.35)', drag: 'rgba(167,139,250,.30)', breath: 'rgba(148,163,184,.25)', air: 'rgba(148,163,184,.25)', broadband: 'rgba(251,113,133,.40)' };
   function buildPlayer(container, { samples, sampleRate, blob, segments, noiseSec }) {
     const dur = samples.length / sampleRate;
     container.innerHTML = '';
     const canvas = document.createElement('canvas'); canvas.className = 'wave'; canvas.title = 'לחיצה מדלגת למקום בקליפ';
     const bar = document.createElement('div'); bar.className = 'player-bar';
-    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn small'; btn.textContent = '▶';
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn small'; btn.textContent = '▶'; btn.title = 'נגן / השהה';
+    const again = document.createElement('button'); again.type = 'button'; again.className = 'btn small'; again.textContent = '⟲'; again.title = 'נגן שוב מההתחלה';
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'btn small'; close.textContent = '✕'; close.title = 'סגור את הנגן';
     const time = document.createElement('span'); time.className = 'ltr time';
     const legend = document.createElement('span'); legend.className = 'legend';
-    const marks = []; if (segments && segments.some((g) => g.kind === 'bang')) marks.push('<i style="background:rgba(245,158,11,.7)"></i>דפיקה');
+    const marks = []; if (segments && segments.some((g) => g.kind === 'bang' && !g.broadband)) marks.push('<i style="background:rgba(245,158,11,.7)"></i>דפיקה');
     if (segments && segments.some((g) => g.kind === 'drag')) marks.push('<i style="background:rgba(167,139,250,.7)"></i>רעש רציף');
-    if (segments && segments.some((g) => g.kind === 'breath')) marks.push('<i style="background:rgba(148,163,184,.7)"></i>נשימה');
+    if (segments && segments.some((g) => g.kind === 'breath' || g.kind === 'air')) marks.push('<i style="background:rgba(148,163,184,.7)"></i>נשימה / אוויר');
     if (segments && segments.some((g) => g.broadband)) marks.push('<i style="background:rgba(251,113,133,.8)"></i>ליד המכשיר');
     legend.innerHTML = marks.join(' ');
     const audio = document.createElement('audio'); audio.preload = 'auto'; audio.src = URL.createObjectURL(blob);
-    bar.append(btn, time, legend); container.append(canvas, bar, audio);
+    bar.append(btn, again, time, legend, close); container.append(canvas, bar, audio);
     // מעטפת לכל עמודה: דציבלים מעל רקע הקליפ (אחוזון 15), כך שגם דפיקה שקטה ליד כיסא רועש נראית
     const W = Math.max(240, Math.floor(container.clientWidth || 320)), H = 72, dpr = Math.min(3, window.devicePixelRatio || 1);
     canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); canvas.style.height = `${H}px`;
@@ -520,10 +532,15 @@
     audio.addEventListener('pause', () => { btn.textContent = '▶'; tick(); });
     audio.addEventListener('ended', () => { btn.textContent = '▶'; tick(); });
     audio.addEventListener('seeked', tick);
-    btn.addEventListener('click', () => { if (audio.paused) audio.play().catch(() => {}); else audio.pause(); });
+    const restart = () => { try { audio.currentTime = 0; } catch (e) { /* ignore */ } audio.play().catch(() => {}); };
+    btn.addEventListener('click', () => { if (audio.ended) restart(); else if (audio.paused) audio.play().catch(() => {}); else audio.pause(); });
+    again.addEventListener('click', restart);
+    close.addEventListener('click', () => { audio.pause(); URL.revokeObjectURL(audio.src); container.innerHTML = ''; container.hidden = true; container._player = null; });
     canvas.addEventListener('click', (e) => { const rect = canvas.getBoundingClientRect(); const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)); audio.currentTime = frac * dur; tick(); });
     tick();
-    return { audio, play: () => audio.play().catch(() => {}) };
+    const player = { audio, play: () => audio.play().catch(() => {}), restart };
+    container._player = player;
+    return player;
   }
   function kindTag(kind, extra) { return KIND_LABEL[kind] ? `<span class="tag kind-${kind}" title="סיווג אוטומטי לפי מבנה הרעש, עלול לטעות${KIND_HINT[kind] ? '. ' + KIND_HINT[kind] : ''}${extra ? '. ' + escapeHtml(extra) : ''}">${KIND_LABEL[kind]}${kind === 'breath' && extra && /מחזורי/.test(extra) ? '?' : ''}</span>` : ''; }
   function renderBulkBar() {
@@ -594,9 +611,10 @@
     const btn = e.target.closest('button[data-act]'); if (!btn) return;
     const li = btn.closest('li.event'); const id = Number(li.dataset.id);
     const ev = events.find((x) => x.id === id); if (!ev) return;
+    if (btn.dataset.act === 'label') { handleLabelClick(btn, ev); ev.updatedAt = Date.now(); await dbPut('events', ev); return; }
     if (btn.dataset.act === 'play') {
       const p = li.querySelector('.player');
-      if (!p.hidden) { p.hidden = true; p.innerHTML = ''; return; }
+      if (!p.hidden && p._player) { p._player.restart(); return; } // הנגן כבר פתוח: מנגנים שוב מההתחלה
       let blob; try { blob = await ensureBlob(ev, btn); } catch (err) { alert('לא ניתן להוריד מ-Drive: ' + err.message); return; }
       const li2 = $(`#events li.event[data-id="${id}"]`) || li; const p2 = li2.querySelector('.player');
       p2.hidden = false;
@@ -684,11 +702,11 @@
         let src; try { src = await items[i].samples(); } catch (err) { log('שגיאה', `ייצוא לניתוח: לא ניתן לקרוא קליפ (${fmtTime(e.noiseTs)}): ${err.message}`); continue; }
         const small = NoiseScan.resample(src.samples, src.sampleRate, ANALYSIS_RATE);
         let auto = null; try { auto = NoiseScan.classify(small, ANALYSIS_RATE, { envelope: true }); } catch (err) { /* ignore */ }
-        const file = `clips/${fmtStamp(e.noiseTs)}_${e.label || 'unlabeled'}_${String(e.uid || e.id || i).slice(0, 6)}.wav`;
+        const file = `clips/${fmtStamp(e.noiseTs)}_${labelsOf(e).join('+') || 'unlabeled'}_${String(e.uid || e.id || i).slice(0, 6)}.wav`;
         files.push({ name: file, data: encodeWav(small, ANALYSIS_RATE), date: new Date(e.noiseTs) });
         clips.push({ file, id: e.id, uid: e.uid, noiseTime: new Date(e.noiseTs).toISOString(), noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, noiseSec: Math.round((e.noiseTs - e.startTs) / 10) / 100,
           peakDb: Math.round(disp(e.peakDb) * 10) / 10, avgDb: Math.round(disp(e.avgDb) * 10) / 10, truncated: !!e.truncated, merged: e.merged || 1, rhythmic: !!e.rhythmic, source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0, originalSampleRate: src.sampleRate,
-          kind: e.kind || '', label: e.label || '', labelText: e.labelText || '', note: e.note || '', auto });
+          kind: e.kind || '', label: e.label || '', labels: labelsOf(e), labelText: e.labelText || '', note: e.note || '', auto });
         await new Promise((r) => setTimeout(r, 0));
       }
       const meta = { app: 'noise-log', version: 2, exportedAt: new Date().toISOString(), sampleRate: ANALYSIS_RATE, device: dev.deviceName, settings: { liveThreshold: settings.threshold, pre: settings.pre, tail: settings.tail, maxClip: settings.maxClip, detectBand: settings.detectBand }, labels: LABELS, expect: LABEL_EXPECT, clips };
@@ -702,7 +720,7 @@
   }
   // מרשימת האירועים השמורים: המסומנים, או כל המתויגים בלילה המוצג
   async function exportForAnalysis() {
-    let list = selectedIds.size ? events.filter((e) => selectedIds.has(e.id)) : filteredEvents().filter((e) => e.label);
+    let list = selectedIds.size ? events.filter((e) => selectedIds.has(e.id)) : filteredEvents().filter((e) => labelsOf(e).length);
     list = list.slice().sort((a, b) => a.noiseTs - b.noiseTs);
     if (!list.length) { alert('אין מה לייצא. סמן אירועים (תיבת הסימון), או תייג אירועים ב"מה זה באמת?" והייצוא ייקח את כל המתויגים.'); return; }
     await buildAnalysisBundle(list.map((e) => ({ meta: e, samples: async () => wavSamples(await ensureBlob(e)) })), $('#analysisBtn'), 'ייצוא לניתוח (מתויגים / מסומנים)');
@@ -710,7 +728,7 @@
   // משלב הסקירה של הייבוא, בלי לשמור: כל מה שתויג ב"מה זה באמת?" (הקליפים נחתכים מהקובץ)
   async function exportReviewForAnalysis() {
     if (!imp || !imp.review) return;
-    const list = imp.review.filter((r) => r.label);
+    const list = imp.review.filter((r) => labelsOf(r).length);
     if (!list.length) { alert('תייג אירועים ב"מה זה באמת?" והייצוא ייקח את כל המתויגים (אין צורך לשמור אותם).'); return; }
     const startMs = currentStartMs() ?? imp.startMs ?? Date.now();
     const items = list.map((r, i) => ({
@@ -1026,7 +1044,7 @@
   }
   async function playReview(li, i) {
     const p = li.querySelector('.player');
-    if (!p.hidden) { p.hidden = true; p.innerHTML = ''; return; }
+    if (!p.hidden && p._player) { p._player.restart(); return; } // הנגן כבר פתוח: מנגנים שוב מההתחלה
     const r = imp.review[i]; const btn = li.querySelector('button[data-act="play"]'); btn.disabled = true;
     try {
       const c = await extractOne(r.startSec, r.endSec);
@@ -1049,7 +1067,7 @@
     const saveOne = async (e, samples, sampleRate) => {
       const rec = {
         startTs: Math.round(startMs + e.startSec * 1000), noiseTs: Math.round(startMs + e.noiseSec * 1000), endTs: Math.round(startMs + e.endSec * 1000),
-        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind, rhythmic: !!e.rhythmic, merged: e.merged || 1, label: e.label || '', labelText: e.labelText || '',
+        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind, rhythmic: !!e.rhythmic, merged: e.merged || 1, label: e.label || '', labels: labelsOf(e), labelText: e.labelText || '',
         sessionId: importId, source: 'file', sourceName: imp.file.name, offsetSec: e.noiseSec, blob: encodeWav(samples, sampleRate),
         uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       };
@@ -1157,8 +1175,10 @@
       handleLabelChange(e.target, r);
     });
     $('#impReviewList').addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-act="play"]'); if (!btn || !imp || !imp.review) return;
-      const li = btn.closest('li.rev'); playReview(li, Number(li.dataset.i));
+      const btn = e.target.closest('button[data-act]'); if (!btn || !imp || !imp.review) return;
+      const li = btn.closest('li.rev'); const r = imp.review[Number(li.dataset.i)];
+      if (btn.dataset.act === 'label') { handleLabelClick(btn, r); return; }
+      if (btn.dataset.act === 'play') playReview(li, Number(li.dataset.i));
     });
     $('#impSelAll').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { r.selected = true; }); renderReview(); });
     $('#impSelNone').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { r.selected = false; }); renderReview(); });
@@ -1247,7 +1267,7 @@
   function driveClipName(e, dev) { return `${fmtStamp(e.noiseTs)}_${sanitizeName(e.deviceName || dev.deviceName) || 'device'}_${String(e.uid).slice(0, 6)}.wav`; }
   function indexEntryOf(e) {
     return { uid: e.uid, noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate: e.sampleRate, truncated: !!e.truncated,
-      kind: e.kind || '', note: e.note || '', label: e.label || '', labelText: e.labelText || '', source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0,
+      kind: e.kind || '', note: e.note || '', label: e.label || '', labels: labelsOf(e), labelText: e.labelText || '', source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0,
       deviceId: e.deviceId || '', deviceName: e.deviceName || '', fileId: e.driveFileId || '', fileName: e.driveFileName || '', updatedAt: e.updatedAt || 0,
       timeCorrected: !!e.timeCorrected, originalNoiseTs: e.originalNoiseTs };
   }
@@ -1315,7 +1335,7 @@
           if (!cur) { if (!e.remote) { byUid.set(e.uid, indexEntryOf(e)); changed = true; } }
           else if (!e.remote && (e.updatedAt || 0) > (cur.updatedAt || 0)) { byUid.set(e.uid, Object.assign({}, cur, indexEntryOf(e))); changed = true; }
           else if (e.remote && (cur.updatedAt || 0) > (e.updatedAt || 0)) {
-            Object.assign(e, { note: cur.note || '', label: cur.label || '', labelText: cur.labelText || '', kind: cur.kind || e.kind, noiseTs: cur.noiseTs, startTs: cur.startTs, endTs: cur.endTs, driveFileName: cur.fileName || e.driveFileName, timeCorrected: !!cur.timeCorrected, originalNoiseTs: cur.originalNoiseTs, updatedAt: cur.updatedAt });
+            Object.assign(e, { note: cur.note || '', label: cur.label || '', labels: Array.isArray(cur.labels) ? cur.labels : (cur.label ? [cur.label] : []), labelText: cur.labelText || '', kind: cur.kind || e.kind, noiseTs: cur.noiseTs, startTs: cur.startTs, endTs: cur.endTs, driveFileName: cur.fileName || e.driveFileName, timeCorrected: !!cur.timeCorrected, originalNoiseTs: cur.originalNoiseTs, updatedAt: cur.updatedAt });
             await dbPut('events', e);
           }
         }

@@ -8,7 +8,7 @@ const path = require('path');
 require(path.resolve(__dirname, '..', 'docs', 'scan.js'));
 const NS = globalThis.NoiseScan;
 
-const LABEL_EXPECT = { wall: ['bang', 'bangdrag'], drag: ['noise', 'bangdrag'], chair: ['bang', 'bangdrag'], breath: ['breath'], speech: ['speech'], handling: ['handling'], background: ['noise'], other: [] };
+const LABEL_EXPECT = { wall: ['bang', 'bangdrag'], drag: ['noise', 'bangdrag'], chair: ['bang', 'bangdrag'], breath: ['breath'], speech: ['speech'], handling: ['handling'], background: ['noise', 'breath', 'handling'], other: [] };
 const KIND_HE = { bang: 'דפיקה', bangdrag: 'דפיקה+גרירה', handling: 'ליד המכשיר', noise: 'רעש רציף', breath: 'נשימה', speech: 'דיבור', unknown: 'לא ידוע' };
 
 // קורא ZIP שנכתב בלי דחיסה (כמו makeZip באפליקציה): רשומות מקומיות ברצף
@@ -47,15 +47,16 @@ const segText = (cls) => cls.segments.map((g) => `${g.kind === 'bang' ? 'דפי�
     for (const c of b.meta.clips) {
       const { samples, sampleRate } = await wavToSamples(b.read(c.file), path.basename(c.file));
       const cls = NS.classify(samples, sampleRate);
-      const expect = LABEL_EXPECT[c.label]; const checked = !!(expect && expect.length);
+      const labels = Array.isArray(c.labels) && c.labels.length ? c.labels : (c.label ? [c.label] : []);
+      const expect = [...new Set(labels.flatMap((l) => LABEL_EXPECT[l] || []))]; const checked = expect.length > 0; // כמה תיוגים: כל סיווג שמתאים לאחד מהם נחשב נכון
       const ok = checked ? expect.includes(cls.kind) : null;
       if (ok === false) fails++;
       const mark = ok === null ? '  ' : ok ? 'ok' : '!!';
-      const label = c.label ? (c.label === 'other' ? `אחר: ${c.labelText || ''}` : (b.meta.labels && b.meta.labels[c.label]) || c.label) : '(לא תויג)';
+      const label = labels.length ? labels.map((l) => (l === 'other' ? `אחר: ${c.labelText || ''}` : (b.meta.labels && b.meta.labels[l]) || l)).join('+') : '(לא תויג)';
       const changed = c.kind && c.kind !== cls.kind ? ` (בייצוא: ${KIND_HE[c.kind] || c.kind})` : '';
       console.log(`${mark} ${path.basename(c.file).padEnd(44)} תיוג: ${label.padEnd(16)} עכשיו: ${(KIND_HE[cls.kind] || cls.kind).padEnd(12)} ${cls.knocks} דפיקות${cls.broadband ? `, ${cls.broadband} רחב-פס` : ''}${changed}${c.note ? `  הערה: ${c.note}` : ''}`);
       if (verbose) console.log(`      ${segText(cls) || 'בלי מקטעים'}  (רקע ${(cls.floorDb + 100).toFixed(0)}, שיא ${c.peakDb})`);
-      rows.push({ label: c.label || '', ok });
+      rows.push({ label: labels.join('+'), ok });
     }
   }
   const byLabel = {};

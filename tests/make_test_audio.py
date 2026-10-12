@@ -71,10 +71,10 @@ def make_breath_file(out, sr):
         sig[i0:i0 + blen] += 0.03 * _highpass(rng.normal(0, 1, blen), sr) * env
     # דפיקה דרך הקיר בשנייה 20: תדר נמוך, התקפה מהירה, דעיכה 0.6 שניות
     i0 = int(20 * sr); t = np.arange(int(0.6 * sr)) / sr
-    sig[i0:i0 + len(t)] += 0.35 * (np.sin(2 * np.pi * 90 * t) + 0.5 * np.sin(2 * np.pi * 140 * t)) * np.exp(-7 * t) + 0.1 * rng.normal(0, 1, len(t)) * np.exp(-40 * t)
+    sig[i0:i0 + len(t)] += 0.35 * (np.sin(2 * np.pi * 90 * t) + 0.5 * np.sin(2 * np.pi * 140 * t) + 0.9 * np.sin(2 * np.pi * 420 * t) * np.exp(-3 * t)) * np.exp(-7 * t)
     # גרירה בשנייה 40: רעש בתדרים נמוכים (דרך הרצפה), 2 שניות
     i0 = int(40 * sr); m = int(2 * sr)
-    sig[i0:i0 + m] += 0.06 * _lowpass(rng.normal(0, 1, m), sr) + 0.05 * np.sin(2 * np.pi * 60 * np.arange(m) / sr) * (0.7 + 0.3 * rng.normal(0, 1, m))
+    sig[i0:i0 + m] += 0.06 * _lowpass(rng.normal(0, 1, m), sr, 700.0) + 0.05 * np.sin(2 * np.pi * 60 * np.arange(m) / sr) * (0.7 + 0.3 * rng.normal(0, 1, m))
     pcm = (np.clip(sig, -1, 1) * 32767).astype(np.int16)
     with wave.open(out, "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm.tobytes())
@@ -98,18 +98,19 @@ def main():
         i0, i1 = int(t0 * sr), int((t0 + dur) * sr)
         t = np.arange(i1 - i0) / sr
         if kind == "bang":
-            burst = np.sin(2 * np.pi * 120 * t) * np.exp(-t * 25) * 0.4 + rng.normal(0, 0.15, i1 - i0) * np.exp(-t * 30)
+            # דפיקה דרך הקיר: צלצול נמוך (120 Hz) + "טוק" באמצע (450 Hz) שדועך מהר יותר, בלי תדרים גבוהים
+            burst = np.sin(2 * np.pi * 120 * t) * np.exp(-t * 25) * 0.4 + np.sin(2 * np.pi * 450 * t) * np.exp(-t * 33) * 0.45
         else:
-            burst = 0.056 * _lowpass(rng.normal(0, 1, i1 - i0), sr)  # ~ -25 dBFS RMS, תדרים נמוכים (דרך הרצפה)
+            burst = 0.056 * _lowpass(rng.normal(0, 1, i1 - i0), sr, 700.0)  # ~ -25 dBFS RMS, תדרים נמוכים ובינוניים (דרך הרצפה)
         sig[i0:i1] += burst
     if args.with_speech:
         i0 = int(32.0 * sr)
         t = np.arange(int(2.5 * sr)) / sr
         f0 = 100 + 80 * (0.5 + 0.5 * np.sin(2 * np.pi * 0.7 * t))
         phase = 2 * np.pi * np.cumsum(f0) / sr
-        voice = sum(np.sin(h * phase) / h for h in range(1, 13))
+        voice = sum(np.sin(h * phase) / np.sqrt(h) for h in range(1, 13))  # הרמוניות כמו פורמנטים: רוב האנרגיה מעל 300 Hz
         syl = (0.5 + 0.5 * np.sin(2 * np.pi * 4 * t)) ** 2
-        sig[i0:i0 + len(t)] += 0.15 * voice * syl
+        sig[i0:i0 + len(t)] += 0.1 * voice * syl
     pcm = np.clip(sig, -1, 1)
     pcm = (pcm * 32767).astype(np.int16)
     with wave.open(args.out, "wb") as w:
