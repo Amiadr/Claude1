@@ -293,7 +293,8 @@
       if (onProgress) onProgress(1);
     }
     findPacket(t) { // האינדקס האחרון שזמנו <= t
-      const a = this.times; let lo = 0, hi = a.length - 1;
+      const a = this.times; if (!a) throw new Error('אין אינדקס פריימים לקובץ; יש לקרוא ensureIndex() לפני חילוץ');
+      let lo = 0, hi = a.length - 1;
       while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (a[mid] <= t) lo = mid; else hi = mid - 1; }
       return lo;
     }
@@ -485,6 +486,31 @@
       return this;
     }
     packetCount() { return this.offsetsList ? this.offsetsList.length : Math.ceil((this.info.durationSec * this.sr) / this.spf); }
+    // אינדקס פריימים בלי פענוח: קריאה סדרתית של כותרות בלבד (מהירה), כדי שאפשר יהיה לחלץ טווח (extract) בלי לסרוק
+    // את כל הקובץ. גם נותן את האורך המדויק במקום הערכה.
+    async ensureIndex(onProgress) {
+      if (this.offsetsList) return;
+      const f = this.file; const offsets = []; let carry = new Uint8Array(0); let pos = this.firstFrame; const sr = this.sr;
+      while (pos < f.size) {
+        if (this.cancelled) return;
+        const chunk = await readSlice(f, pos, pos + WINDOW); pos += chunk.length;
+        const buf = carry.length ? (() => { const b = new Uint8Array(carry.length + chunk.length); b.set(carry); b.set(chunk, carry.length); return b; })() : chunk;
+        const base = pos - buf.length; let q = 0;
+        while (q + 4 <= buf.length) {
+          const h = mp3Header(buf, q);
+          if (!h || h.sr !== sr) { q++; continue; }
+          if (q + h.len > buf.length && pos < f.size) break;
+          offsets.push(base + q); q += h.len;
+        }
+        carry = buf.subarray(Math.min(q, buf.length));
+        if (onProgress) onProgress(pos / f.size);
+        await yieldNow();
+      }
+      this.offsetsList = Float64Array.from(offsets);
+      this.times = new Float64Array(offsets.length); for (let i = 0; i < offsets.length; i++) this.times[i] = (i * this.spf) / sr;
+      this.info.durationSec = (offsets.length * this.spf) / sr; this.info.durationEstimated = false;
+      if (onProgress) onProgress(1);
+    }
     // מעבר ראשון: סריקה סדרתית של הפריימים תוך בניית טבלת היסטים
     async decodeAll(onSamples, onProgress) {
       const f = this.file; const offsets = []; let carry = new Uint8Array(0); let pos = this.firstFrame; let idx = 0; const self = this;
@@ -516,7 +542,7 @@
       if (onProgress) onProgress(1);
     }
     async *packetsFrom(i0, i1) {
-      if (!this.offsetsList) throw new Error('יש לסרוק את הקובץ לפני חילוץ');
+      if (!this.offsetsList) await this.ensureIndex();
       let win = null, wStart = 0, wEnd = 0;
       for (let i = i0; i < i1; i++) {
         const off = this.offsetsList[i]; const end = i + 1 < this.offsetsList.length ? this.offsetsList[i + 1] : this.file.size;
