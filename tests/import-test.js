@@ -56,6 +56,11 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
       await page.waitForSelector('#impReviewList li.rev:first-child .player audio', { state: 'attached', timeout: 20000 });
       info.played = await page.$eval('#impReviewList li.rev:first-child .player audio', (a) => a.src.startsWith('blob:'));
       info.wave = await page.$eval('#impReviewList li.rev:first-child .player canvas.wave', (c) => c.width > 0 && c.height > 0);
+      // לחיצה נוספת על "נגן" כשהנגן פתוח מנגנת שוב מההתחלה (לא סוגרת); ✕ סוגר
+      await page.click('#impReviewList li.rev:first-child button[data-act="play"]');
+      info.replay = await page.$eval('#impReviewList li.rev:first-child .player', (p) => !p.hidden && !!p.querySelector('canvas.wave') && !!p.querySelector('button[title="נגן שוב מההתחלה"]') && !!p.querySelector('button[title="סגור את הנגן"]'));
+      await page.click('#impReviewList li.rev:first-child .player button[title="סגור את הנגן"]');
+      info.closed = await page.$eval('#impReviewList li.rev:first-child .player', (p) => p.hidden);
     }
     if (opts.clickNoSpeech) await page.click('#impSelNoSpeech');
     for (const i of opts.deselect || []) await page.click(`#impReviewList li.rev:nth-child(${i + 1}) input[data-act="sel"]`);
@@ -77,6 +82,7 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     assert(r.rows === r.review.length && r.rows === r.detected.length, `${label}: review list shows ${r.rows} rows`);
     if (expectedKinds) assert(JSON.stringify(r.review.map((x) => x.kind)) === JSON.stringify(expectedKinds), `${label}: kinds ${r.review.map((x) => x.kind).join('/')} (expected ${expectedKinds.join('/')})`);
     if (r.played !== undefined) assert(r.played === true && r.wave === true, `${label}: play button produced a waveform player with audio`);
+    if (r.replay !== undefined) assert(r.replay === true && r.closed === true, `${label}: play again keeps the player open with replay/close buttons; close hides it`);
     assert(r.saved.length === expected.length, `${label}: ${r.saved.length} events saved (expected ${expected.length})`);
     if (r.saved.length !== expected.length) return;
     const offs = r.saved.map((e) => (e.noiseTs - startMs) / 1000);
@@ -171,12 +177,15 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     // תיוג ידני ("מה זה באמת?") ברשימת האירועים, כולל "אחר" עם טקסט, ייצוא לניתוח והרצת eval-samples על הערכה
     {
       const li = '#events li.event';
-      await page.selectOption(`${li}:nth-child(1) select.label`, 'drag'); // האחרון שנשמר: הגרירה בשנייה 40
-      await page.selectOption(`${li}:nth-child(2) select.label`, 'other');
+      await page.click(`${li}:nth-child(1) button[data-label="drag"]`); // האחרון שנשמר: הגרירה בשנייה 40
+      await page.click(`${li}:nth-child(1) button[data-label="wall"]`); // תיוג מרובה: גרירה וגם דפיקה על הקיר
+      await page.click(`${li}:nth-child(2) button[data-label="other"]`);
       assert(await page.$eval(`${li}:nth-child(2) input.label-text`, (el) => !el.hidden), 'label: "other" reveals the free-text field');
       await page.fill(`${li}:nth-child(2) input.label-text`, 'מגירה שנסגרה'); await page.dispatchEvent(`${li}:nth-child(2) input.label-text`, 'change');
-      const labels = await page.evaluate(() => window.__noiseLog.events.map((e) => `${e.label}${e.labelText ? ':' + e.labelText : ''}`));
-      assert(labels.includes('drag') && labels.includes('other:מגירה שנסגרה'), `label: stored on the events (${labels.join(' | ')})`);
+      const labels = await page.evaluate(() => window.__noiseLog.events.map((e) => `${(e.labels || []).join('+')}${e.labelText ? ':' + e.labelText : ''}`));
+      assert(labels.includes('wall+drag') && labels.includes('other:מגירה שנסגרה'), `label: multiple labels stored on the events (${labels.join(' | ')})`);
+      await page.click(`${li}:nth-child(1) button[data-label="wall"]`); // ביטול בלחיצה נוספת
+      assert((await page.evaluate(() => window.__noiseLog.events.map((e) => (e.labels || []).join('+')))).includes('drag'), 'label: a second click removes a label');
       const csv = await page.evaluate(() => window.__noiseLog.eventsCsv(window.__noiseLog.events));
       assert(csv.includes('תיוג ידני') && csv.includes('אחר: מגירה שנסגרה') && csv.includes(',גרירה,'), 'label: CSV has the manual-label column');
       const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#analysisBtn')]);
