@@ -104,10 +104,16 @@
     <label><input type="radio" name="cutKind" value="split"> פיצול לחלקים שווים</label>
   </div>
   <div id="cutManual">
-    <div class="timepick">
-      <label class="tp"><span>מהשעה</span><input id="cutFrom" type="time" step="1"></label>
-      <label class="tp"><span>עד השעה</span><input id="cutTo" type="time" step="1"></label>
+    <div class="radios" style="margin:0 0 8px">
+      <label><input type="radio" name="cutRef" value="clock" checked> לפי שעון</label>
+      <label><input type="radio" name="cutRef" value="offset"> לפי זמן בקובץ (מתחילתו)</label>
     </div>
+    <div class="timepick">
+      <label class="tp"><span id="cutFromLabel">מהשעה</span><input id="cutFrom" type="time" step="1"></label>
+      <label class="tp"><span>משך (דקות)</span><input id="cutLen" type="number" min="0.1" step="0.1" placeholder="עד הסוף" style="background:#0b1220;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:1.05rem;width:7em"></label>
+      <label class="tp"><span id="cutToLabel">עד השעה</span><input id="cutTo" type="time" step="1"></label>
+    </div>
+    <div class="muted" style="margin-top:4px">ברירת המחדל היא כל הקובץ; משנים רק מה שצריך. "משך" קובע את הסיום לפי ההתחלה (למשל 20 הדקות הראשונות), ואפשר גם שתי לחיצות על ציר הזמן.</div>
     <div id="cutSelInfo" class="muted" style="margin-top:6px"></div>
     <div class="row top"><button id="cutGoBtn" class="btn primary" disabled>✂️ חתוך והורד</button></div>
   </div>

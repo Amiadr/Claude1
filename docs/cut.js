@@ -15,7 +15,7 @@
   const yieldNow = () => new Promise((r) => setTimeout(r, 0));
   const disp = (db) => db + 100;
 
-  const st = { file: null, scanner: null, info: null, startMs: null, startManual: false, levels: null, floorDb: null, events: [], sel: null, pieces: [], busy: false };
+  const st = { file: null, scanner: null, info: null, startMs: null, startManual: false, levels: null, floorDb: null, events: [], sel: null, selAuto: true, pieces: [], busy: false };
 
   function setError(msg) { const el = $('#cutError'); el.hidden = !msg; el.textContent = msg || ''; }
   function setProgress(f, text) { $('#cutProgress').hidden = false; $('#cutBar').style.width = `${Math.round(f * 100)}%`; $('#cutProgText').textContent = `${text} ${Math.round(f * 100)}%`; }
@@ -36,7 +36,13 @@
     const dur = durationSec(), el = $('#cutRange');
     if (st.startMs === null) el.textContent = 'הזן תאריך ושעה.';
     else el.textContent = `ההקלטה: ${fmtDate(st.startMs)} ${fmtTime(st.startMs)} עד ${fmtDate(st.startMs + dur * 1000)} ${fmtTime(st.startMs + dur * 1000)} (אורך ${fmtHms(dur)})`;
+    if (st.selAuto) fillWholeFile();
     renderSelection(); renderPieces(); drawTimeline();
+  }
+  // ברירת המחדל של הטווח: כל הקובץ (נכתב מחדש כל עוד המשתמש לא ערך)
+  function fillWholeFile() {
+    const dur = durationSec(); if (!dur) return;
+    $('#cutFrom').value = offsetToInput(0); $('#cutTo').value = offsetToInput(dur); $('#cutLen').value = '';
   }
   function renderStartCandidates() {
     const cands = NoiseScan.startCandidates(st.file, st.info || {});
@@ -54,7 +60,7 @@
 
   // ---------- פתיחת קובץ ----------
   async function openFile(file) {
-    setError(''); hideProgress(); st.file = file; st.scanner = null; st.info = null; st.levels = null; st.events = []; st.sel = null; st.pieces = [];
+    setError(''); hideProgress(); st.file = file; st.scanner = null; st.info = null; st.levels = null; st.events = []; st.sel = null; st.selAuto = true; st.pieces = [];
     $('#cutInfo').hidden = true; $('#cutWork').hidden = true;
     try {
       const s = await NoiseScan.open(file);
@@ -111,33 +117,59 @@
   }
 
   // ---------- חיתוך ידני ----------
+  // הטווח מוזן לפי שעון (שעה ביום) או לפי זמן בקובץ (שעות:דקות:שניות מתחילתו)
+  const refIsClock = () => modeOf('cutRef') === 'clock';
   // שעה על השעון → היסט בהקלטה: על התאריך של תחילת ההקלטה, ואם זה לפני ההתחלה, למחרת (חציית חצות)
   function clockToOffset(timeStr) {
-    if (st.startMs === null || !timeStr) return null;
-    const t = timeStr.length === 5 ? timeStr + ':00' : timeStr; const d0 = new Date(st.startMs);
+    if (!timeStr) return null;
+    const t = timeStr.length === 5 ? timeStr + ':00' : timeStr;
+    if (!refIsClock()) { const m = t.match(/^(\d{1,2}):(\d{2}):(\d{2})$/); return m ? Math.max(0, Math.min(durationSec(), +m[1] * 3600 + +m[2] * 60 + +m[3])) : null; }
+    if (st.startMs === null) return null;
+    const d0 = new Date(st.startMs);
     let d = new Date(`${d0.getFullYear()}-${pad(d0.getMonth() + 1)}-${pad(d0.getDate())}T${t}`); if (isNaN(d)) return null;
     if (d.getTime() < st.startMs - 1000) d = new Date(d.getTime() + 86400000);
     return Math.max(0, Math.min(durationSec(), (d.getTime() - st.startMs) / 1000));
   }
+  function offsetToInput(sec) { sec = Math.round(sec); return refIsClock() && st.startMs !== null ? fmtTime(st.startMs + sec * 1000) : fmtHms(sec); }
   function readSelection() {
     const a = clockToOffset($('#cutFrom').value), b = clockToOffset($('#cutTo').value);
     st.sel = a !== null && b !== null && b > a ? { t0: a, t1: b } : null;
   }
+  // "משך" קובע את הסיום לפי ההתחלה; עריכת הסיום מעדכנת את המשך
+  function onLenChanged() {
+    st.selAuto = false; const a = clockToOffset($('#cutFrom').value); const min = Number($('#cutLen').value);
+    if (a !== null && min > 0) $('#cutTo').value = offsetToInput(Math.min(durationSec(), a + min * 60));
+    renderSelection();
+  }
+  function onRangeEdited(e) {
+    st.selAuto = false;
+    if (e && e.target && e.target.id === 'cutFrom' && Number($('#cutLen').value) > 0) { onLenChanged(); return; }
+    readSelection(); $('#cutLen').value = st.sel ? String(Math.round((st.sel.t1 - st.sel.t0) / 6) / 10) : '';
+    renderSelection();
+  }
+  function onRefChanged() {
+    const clock = refIsClock(); $('#cutFromLabel').textContent = clock ? 'מהשעה' : 'מזמן בקובץ'; $('#cutToLabel').textContent = clock ? 'עד השעה' : 'עד זמן בקובץ';
+    // ממירים את הערכים הקיימים לייצוג החדש לפי ההיסטים שכבר חושבו
+    const sel = st.sel; if (sel) { $('#cutFrom').value = offsetToInput(sel.t0); $('#cutTo').value = offsetToInput(sel.t1); } else if (st.selAuto) fillWholeFile();
+    renderSelection();
+  }
   function renderSelection() {
     readSelection(); const el = $('#cutSelInfo'); const rate = Number($('#cutRate').value) || st.info.sampleRate;
-    if (!st.sel) { el.textContent = st.startMs === null ? 'הזן קודם את זמן ההקלטה.' : 'הזן שעת התחלה וסיום של החלק (שעון), או לחץ על ציר הזמן: לחיצה ראשונה = התחלה, שנייה = סיום.'; $('#cutGoBtn').disabled = true; return; }
+    if (!st.sel) { el.textContent = st.startMs === null && refIsClock() ? 'הזן קודם את זמן ההקלטה (או עבור ל"לפי זמן בקובץ").' : 'הזן התחלה וסיום של החלק, או לחץ על ציר הזמן: לחיצה ראשונה = התחלה, שנייה = סיום.'; $('#cutGoBtn').disabled = true; return; }
     const len = st.sel.t1 - st.sel.t0;
-    el.textContent = `החלק: ${fmtTime(st.startMs + st.sel.t0 * 1000)} עד ${fmtTime(st.startMs + st.sel.t1 * 1000)} (${fmtHms(len)}, היסט ${fmtHms(st.sel.t0)} בהקלטה) ≈ ${fmtBytes(len * rate * 2)} כ-WAV`;
+    const clockTxt = st.startMs !== null ? `${fmtTime(st.startMs + st.sel.t0 * 1000)} עד ${fmtTime(st.startMs + st.sel.t1 * 1000)}` : 'זמן ההקלטה לא ידוע';
+    el.textContent = `החלק: ${clockTxt} (${fmtHms(len)}; בקובץ ${fmtHms(st.sel.t0)} עד ${fmtHms(st.sel.t1)}${st.sel.t0 === 0 && st.sel.t1 >= durationSec() - 0.5 ? ', כל הקובץ' : ''}) ≈ ${fmtBytes(len * rate * 2)} כ-WAV`;
     $('#cutGoBtn').disabled = false; drawTimeline();
   }
   function timelineClick(e) {
-    if (!st.info || st.startMs === null || modeOf('cutKind') !== 'manual') return;
+    if (!st.info || (st.startMs === null && refIsClock()) || modeOf('cutKind') !== 'manual') return;
     const rect = $('#cutTimeline').getBoundingClientRect(); const t = Math.round(Math.max(0, Math.min(durationSec(), ((e.clientX - rect.left) / rect.width) * durationSec()))); // לשנייה שלמה
-    const clock = fmtTime(st.startMs + t * 1000);
-    const from = $('#cutFrom').value, to = $('#cutTo').value;
-    if (!from || to) { $('#cutFrom').value = clock; $('#cutTo').value = ''; } // לחיצה ראשונה (או התחלה מחדש): התחלה
-    else if (t > clockToOffset(from)) $('#cutTo').value = clock;             // לחיצה שנייה: סיום
-    else { $('#cutTo').value = from; $('#cutFrom').value = clock; }           // לחיצה שנייה לפני ההתחלה: מחליפים
+    const v = offsetToInput(t); const from = $('#cutFrom').value, to = $('#cutTo').value;
+    st.selAuto = false; $('#cutLen').value = '';
+    if (!from || to) { $('#cutFrom').value = v; $('#cutTo').value = ''; } // לחיצה ראשונה (או התחלה מחדש): התחלה
+    else if (t > clockToOffset(from)) $('#cutTo').value = v;               // לחיצה שנייה: סיום
+    else { $('#cutTo').value = from; $('#cutFrom').value = v; }             // לחיצה שנייה לפני ההתחלה: מחליפים
+    readSelection(); if (st.sel) $('#cutLen').value = String(Math.round((st.sel.t1 - st.sel.t0) / 6) / 10);
     renderSelection();
   }
 
@@ -177,9 +209,9 @@
       for (let i = 0; i < y.length && w < total; i++, w++) { const v = Math.max(-1, Math.min(1, y[i])); pcm[w] = v < 0 ? v * 32768 : v * 32767; }
       onProgress((b - t0) / (t1 - t0)); await yieldNow();
     }
-    return { blob: NoiseScan.encodeWav(pcm.subarray(0, w), outRate, { icrd: st.startMs + t0 * 1000 }), rate: outRate, seconds: w / outRate };
+    return { blob: NoiseScan.encodeWav(pcm.subarray(0, w), outRate, st.startMs !== null ? { icrd: st.startMs + t0 * 1000 } : undefined), rate: outRate, seconds: w / outRate };
   }
-  function pieceName(t0) { return `${stamp(st.startMs + t0 * 1000)}_${$('#cutPrefix').value.trim() || 'cut'}.wav`; }
+  function pieceName(t0) { return `${st.startMs !== null ? stamp(st.startMs + t0 * 1000) : 'offset_' + fmtHms(t0).replace(/:/g, '-')}_${$('#cutPrefix').value.trim() || 'cut'}.wav`; }
   function downloadBlob(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); }
   async function cutAndDownload(t0, t1, label, idx, count) {
     const name = pieceName(t0);
@@ -190,7 +222,7 @@
     return r;
   }
   async function runCuts(ranges) {
-    if (st.busy) return; if (st.startMs === null) { setError('הזן את זמן ההקלטה לפני החיתוך, כדי שהחלקים יישאו את הזמן המקורי.'); return; }
+    if (st.busy) return; if (st.startMs === null && !confirm('זמן ההקלטה לא ידוע, ולכן החלקים לא יישאו את הזמן המקורי (בשם הקובץ יופיע ההיסט בקובץ). להמשיך?')) return;
     st.busy = true; setError(''); const btns = ['#cutGoBtn', '#cutAllBtn', '#cutScanBtn'].map((s) => $(s)); btns.forEach((b) => { b.disabled = true; });
     try {
       for (let i = 0; i < ranges.length; i++) { const r = ranges[i]; await cutAndDownload(r.t0, r.t1, r.label, i + 1, ranges.length); if (ranges.length > 1) await new Promise((res) => setTimeout(res, 800)); }
@@ -204,7 +236,9 @@
   for (const id of ['#cutDate', '#cutTime']) $(id).addEventListener('change', onTimeChanged);
   document.querySelectorAll('input[name="cutMode"]').forEach((r) => r.addEventListener('change', onTimeChanged));
   document.querySelectorAll('input[name="cutKind"]').forEach((r) => r.addEventListener('change', () => { const split = modeOf('cutKind') === 'split'; $('#cutManual').hidden = split; $('#cutSplit').hidden = !split; drawTimeline(); }));
-  for (const id of ['#cutFrom', '#cutTo']) $(id).addEventListener('change', renderSelection);
+  for (const id of ['#cutFrom', '#cutTo']) $(id).addEventListener('change', onRangeEdited);
+  $('#cutLen').addEventListener('change', onLenChanged);
+  document.querySelectorAll('input[name="cutRef"]').forEach((r) => r.addEventListener('change', onRefChanged));
   $('#cutRate').addEventListener('change', () => { renderSelection(); renderPieces(); });
   $('#cutPieceMin').addEventListener('change', renderPieces); $('#cutOnlyEvents').addEventListener('change', renderPieces);
   $('#cutTimeline').addEventListener('click', timelineClick);
