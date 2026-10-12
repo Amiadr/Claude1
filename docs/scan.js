@@ -704,7 +704,86 @@
     return flagged.size;
   }
 
+  // ---------- WAV (16-bit mono) ----------
+  // samples: Float32Array (-1..1) או Int16Array. opts.icrd: זמן יצירה (ms) שנכתב בקטע LIST/INFO/ICRD בפורמט ISO מקומי;
+  // WavScanner קורא אותו כזמן ההתחלה של ההקלטה, ולכן קטע שנחתך מהקלטה שומר על הזמן המקורי שלו.
+  function encodeWav(samples, sr, opts) {
+    const n = samples.length; const enc = new TextEncoder();
+    let list = new Uint8Array(0);
+    if (opts && opts.icrd) {
+      const d = new Date(opts.icrd), pad = (x) => String(x).padStart(2, '0');
+      const txt = enc.encode(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}\0`);
+      const padded = txt.length + (txt.length & 1);
+      list = new Uint8Array(20 + padded); const lv = new DataView(list.buffer);
+      list.set(enc.encode('LIST'), 0); lv.setUint32(4, 12 + padded, true); list.set(enc.encode('INFO'), 8); list.set(enc.encode('ICRD'), 12); lv.setUint32(16, txt.length, true); list.set(txt, 20);
+    }
+    const buf = new ArrayBuffer(44 + list.length + n * 2); const v = new DataView(buf); const u8 = new Uint8Array(buf);
+    const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + list.length + n * 2, true); w(8, 'WAVE');
+    w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    u8.set(list, 36);
+    let o = 36 + list.length; w(o, 'data'); v.setUint32(o + 4, n * 2, true); o += 8;
+    if (samples instanceof Int16Array) { new Int16Array(buf, o, n).set(samples); }
+    else for (let i = 0; i < n; i++, o += 2) { const x = Math.max(-1, Math.min(1, samples[i])); v.setInt16(o, x < 0 ? x * 32768 : x * 32767, true); }
+    return new Blob([buf], { type: 'audio/wav' });
+  }
+
+  // ---------- ZIP (store only, ללא דחיסה – WAV ממילא לא נדחס טוב) ----------
+  const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[i] = c >>> 0; } return t; })();
+  function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+  function dosDateTime(d) {
+    return { time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+             date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() };
+  }
+  // files: [{ name, data: Uint8Array | Blob, date? }]
+  async function makeZip(files) {
+    const enc = new TextEncoder();
+    const parts = [], central = [];
+    let offset = 0;
+    for (const f of files) {
+      const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(await f.data.arrayBuffer());
+      const name = enc.encode(f.name);
+      const crc = crc32(data);
+      const { time, date } = dosDateTime(f.date || new Date());
+      const lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+      lh.setUint16(10, time, true); lh.setUint16(12, date, true); lh.setUint32(14, crc, true);
+      lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+      parts.push(lh.buffer, name, data);
+      const ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true);
+      ch.setUint16(12, time, true); ch.setUint16(14, date, true); ch.setUint32(16, crc, true);
+      ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, name.length, true);
+      ch.setUint16(30, 0, true); ch.setUint16(32, 0, true); ch.setUint16(34, 0, true); ch.setUint16(36, 0, true); ch.setUint32(38, 0, true); ch.setUint32(42, offset, true);
+      central.push(ch.buffer, name);
+      offset += 30 + name.length + data.length;
+    }
+    const cdSize = central.reduce((a, b) => a + b.byteLength, 0);
+    const eocd = new DataView(new ArrayBuffer(22));
+    eocd.setUint32(0, 0x06054b50, true); eocd.setUint16(4, 0, true); eocd.setUint16(6, 0, true);
+    eocd.setUint16(8, files.length, true); eocd.setUint16(10, files.length, true);
+    eocd.setUint32(12, cdSize, true); eocd.setUint32(16, offset, true); eocd.setUint16(20, 0, true);
+    return new Blob([...parts, ...central, eocd.buffer], { type: 'application/zip' });
+  }
+
   // ---------- המרת קצב דגימה ----------
+  // גרסה בזרימה: שומרת את מצב המסנן והמיקום בין קטעים, כך שחיתוך ארוך מומר בקטעים בלי תפרים
+  class Resampler {
+    constructor(sr, outRate) {
+      this.sr = sr; this.outRate = outRate; this.step = sr / outRate; this.pos = 0; this.prev = 0;
+      const fc = outRate * 0.42; this.lp = outRate < sr ? [new Biquad('lowpass', fc, sr), new Biquad('lowpass', fc, sr)] : null;
+    }
+    process(samples) {
+      if (this.sr === this.outRate) return Float32Array.from(samples);
+      const n = samples.length; if (!n) return new Float32Array(0);
+      let x = samples; if (this.lp) { x = this.lp[0].run(samples); this.lp[1].run(x, x); }
+      const out = new Float32Array(Math.ceil((n - this.pos) / this.step) + 2); let m = 0, p = this.pos;
+      for (;;) { const k = Math.floor(p); if (k + 1 > n - 1) break; const t = p - k; const a = k < 0 ? this.prev : x[k]; out[m++] = a + (x[k + 1] - a) * t; p += this.step; }
+      this.pos = p - n; this.prev = x[n - 1];
+      return out.subarray(0, m);
+    }
+  }
   // מסנן 4 קטבים מעט מתחת לחצי קצב היעד, ואז אינטרפולציה לינארית. מספיק לניתוח (המסווג עובד ב-8 kHz ממילא).
   function resample(samples, sr, outRate) {
     if (sr === outRate) return Float32Array.from(samples);
@@ -774,5 +853,5 @@
     return c;
   }
 
-  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, kindFromSegments, markRhythmic, mergeAdjacent, mergedKind, keepsApart, resample, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
+  root.NoiseScan = { open, sniff, detectFromLevels, median, startCandidates, dateFromName, classify, kindFromSegments, markRhythmic, mergeAdjacent, mergedKind, keepsApart, resample, Resampler, encodeWav, makeZip, Biquad, LOW_BAND_HZ, DecodedScanner, FRAME_SEC, LevelAccumulator, mp3Header, parseEsds };
 })(typeof self !== 'undefined' ? self : globalThis);
