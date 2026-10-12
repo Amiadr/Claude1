@@ -179,6 +179,12 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
     const dragOnly = mk(6); for (let i = 0; i < dragOnly.length; i++) dragOnly[i] = 0.004 * gauss(); { const dn = lowNoise(Math.round(1.5 * sr)); for (let i = 0; i < dn.length; i++) dragOnly[Math.round(2 * sr) + i] += 0.03 * dn[i]; }
     const cdo = NS.classify(dragOnly, sr);
     assert(cdo.kind === 'drag' && cdo.segments.length === 1 && cdo.segments[0].kind === 'drag', `classify: drag without knocks → ${cdo.kind} [${cdo.segments.map((g) => g.kind + ' mf' + g.mfRatio).join(', ')}]`);
+    // ציון גרירה: גרירה ברורה גבוה, הבלי אוויר בלי ציון (אין רצף), גרירה רכה שקטה מסומנת לא ודאית עם ציון נמוך יותר
+    assert(cdo.dragScore >= 50 && !cdo.uncertain, `classify: clear drag has a high drag score and is certain (${cdo.dragScore}%)`);
+    assert(ca.dragScore === null || ca.dragScore < 25, `classify: air puffs have no or low drag score (${ca.dragScore})`);
+    const softDrag = mk(7); for (let i = 0; i < softDrag.length; i++) softDrag[i] = 0.004 * gauss(); { const dn = lowNoise(Math.round(1.5 * sr), 500); for (let i = 0; i < dn.length; i++) { const t = i / dn.length; softDrag[Math.round(2 * sr) + i] += 0.012 * dn[i] * Math.min(1, t * 4); } }
+    const csd = NS.classify(softDrag, sr);
+    assert(csd.kind === 'drag' && csd.uncertain === true && csd.dragScore < cdo.dragScore, `classify: quiet soft drag → ${csd.kind}, uncertain, lower score (${csd.dragScore}% vs ${cdo.dragScore}%; mf ${csd.segments.map((g) => g.mfRatio).join(',')})`);
     // גרירה של 1.5 שניות אחרי הכיסא: דפיקה + גרירה, והגרירה נמדדת בנפרד מהזנב של הטריקה
     const chairDrag = Float32Array.from(mixed); { const dn = lowNoise(Math.round(1.5 * sr)); for (let i = 0; i < dn.length; i++) chairDrag[Math.round(7.2 * sr) + i] += 0.02 * dn[i]; }
     const ccd = NS.classify(chairDrag, sr);

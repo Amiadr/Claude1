@@ -175,7 +175,7 @@
         avgDb: 20 * Math.log10(Math.max(Math.sqrt(ev.sumSq / ev.n), 1e-6)),
         sampleRate: this.sr, samples: out, truncated, merged: 1,
       };
-      e.cls = this.classifier(out); e.kind = e.cls.kind;
+      e.cls = this.classifier(out); e.kind = e.cls.kind; e.dragScore = typeof e.cls.dragScore === 'number' ? e.cls.dragScore : null; e.uncertain = !!e.cls.uncertain;
       const held = this.held; this.held = null;
       if (held) {
         // האירוע הזה התחיל בתוך pre שניות מסוף המוחזק (אחרת המוחזק כבר היה נמסר), והקליפים צמודים
@@ -190,7 +190,8 @@
       const n = samples.length, sumSq = a.sumSq + b.sumSq;
       const kind = window.NoiseScan ? NoiseScan.mergedKind(a, b) : (a.kind || b.kind);
       const segments = [...((a.cls && a.cls.segments) || []), ...((b.cls && b.cls.segments) || []).map((g) => Object.assign({}, g, { sec: g.sec + a.durationSec }))];
-      return Object.assign({}, a, { endTs: b.endTs, durationSec: n / this.sr, peakDb: Math.max(a.peakDb, b.peakDb), sumSq, avgDb: 20 * Math.log10(Math.max(Math.sqrt(sumSq / n), 1e-6)), samples, truncated: b.truncated, kind, cls: { kind, segments }, merged: (a.merged || 1) + (b.merged || 1) });
+      const dragScore = window.NoiseScan ? NoiseScan.dragScore(segments) : null;
+      return Object.assign({}, a, { endTs: b.endTs, durationSec: n / this.sr, peakDb: Math.max(a.peakDb, b.peakDb), sumSq, avgDb: 20 * Math.log10(Math.max(Math.sqrt(sumSq / n), 1e-6)), samples, truncated: b.truncated, kind, cls: { kind, segments }, dragScore, uncertain: kind === 'drag' && !segments.some((g) => g.kind === 'drag' && !g.broadband && (!g.soft || g.heightDb >= 20)), merged: (a.merged || 1) + (b.merged || 1) });
     }
     emit(e) { this.held = null; delete e.sumSq; delete e.cls; this.onEvent(e); }
     flush() { if (this.active) this.finish(this.active, true); if (this.held) this.emit(this.held); }
@@ -201,12 +202,13 @@
   const makeZip = (files) => NoiseScan.makeZip(files);
 
   // ---------- CSV ----------
+  function kindCsv(e) { return (KIND_LABEL[e.kind] || '') + (e.kind === 'drag' && e.uncertain ? '?' : '') + (typeof e.dragScore === 'number' && ['drag', 'breath', 'noise', 'bangdrag'].includes(e.kind) ? ` (ציון גרירה ${e.dragScore}%)` : ''); }
   function csvCell(v) { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
   function eventsCsv(list) {
     const head = ['#', 'תאריך', 'שעת תחילת הרעש', 'תחילת הקליפ', 'סיום הקליפ', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'קליפ קטוע', 'סיווג אוטומטי', 'תיוג ידני', 'הערה', 'קובץ', 'מקור', 'היסט בהקלטה המקורית', 'מכשיר', 'Drive'];
     const rows = list.slice().sort((a, b) => a.noiseTs - b.noiseTs).map((e) => [
       e.id, fmtDate(e.noiseTs), fmtTimeMs(e.noiseTs), fmtTime(e.startTs), fmtTime(e.endTs),
-      e.durationSec.toFixed(1), disp(e.peakDb).toFixed(1), disp(e.avgDb).toFixed(1), e.truncated ? 'כן' : '', KIND_LABEL[e.kind] || '', labelText(e), e.note || '', fileName(e),
+      e.durationSec.toFixed(1), disp(e.peakDb).toFixed(1), disp(e.avgDb).toFixed(1), e.truncated ? 'כן' : '', kindCsv(e), labelText(e), e.note || '', fileName(e),
       e.source === 'file' ? e.sourceName : 'מיקרופון', e.source === 'file' ? fmtHms(e.offsetSec) : '', e.deviceName || '', e.driveFileId ? (e.remote ? 'מ-Drive' : 'הועלה') : '']);
     return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
@@ -342,7 +344,7 @@
     const dev = deviceInfo();
     const rec = { kind, uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       startTs: ev.startTs, noiseTs: ev.noiseTs, endTs: ev.endTs, durationSec: ev.durationSec,
-      peakDb: ev.peakDb, avgDb: ev.avgDb, sampleRate: ev.sampleRate, truncated: ev.truncated, merged: ev.merged || 1,
+      peakDb: ev.peakDb, avgDb: ev.avgDb, sampleRate: ev.sampleRate, truncated: ev.truncated, merged: ev.merged || 1, dragScore: typeof ev.dragScore === 'number' ? ev.dragScore : null, uncertain: !!ev.uncertain,
       note: '', sessionId, blob: encodeWav(ev.samples, ev.sampleRate),
     };
     try {
@@ -542,7 +544,15 @@
     container._player = player;
     return player;
   }
-  function kindTag(kind, extra) { return KIND_LABEL[kind] ? `<span class="tag kind-${kind}" title="סיווג אוטומטי לפי מבנה הרעש, עלול לטעות${KIND_HINT[kind] ? '. ' + KIND_HINT[kind] : ''}${extra ? '. ' + escapeHtml(extra) : ''}">${KIND_LABEL[kind]}${kind === 'breath' && extra && /מחזורי/.test(extra) ? '?' : ''}</span>` : ''; }
+  // e: אירוע/שורת סקירה עם dragScore ו-uncertain (אופציונלי). "גרירה?" = גרירה לא ודאית; האחוז = ציון גרירה (כמה הרצף דומה לגרירה אמיתית)
+  function kindTag(kind, extra, e) {
+    if (!KIND_LABEL[kind]) return '';
+    const q = (kind === 'drag' && e && e.uncertain) || (kind === 'breath' && extra && /מחזורי/.test(extra)) ? '?' : '';
+    const score = e && typeof e.dragScore === 'number' && ['drag', 'breath', 'noise', 'bangdrag'].includes(kind) ? e.dragScore : null;
+    const scoreTxt = score === null ? '' : ` <small class="score" title="ציון גרירה: כמה הרצף הכי ארוך דומה לגרירה אמיתית (פס אמצע, מהירות ההתחלה, גובה מעל הרקע). נשימה עם ציון גבוה וגרירה עם ציון נמוך הן אזור הספק">${kind === 'drag' || kind === 'bangdrag' ? '' : 'גרירה '}${score}%</small>`;
+    const hint = kind === 'drag' && e && e.uncertain ? 'גרירה לא ודאית: בלי דפיקות, רק רצפים עם מעט פס אמצע ומתחת ל-20 dB מעל הרקע. כדאי להאזין' : KIND_HINT[kind] || '';
+    return `<span class="tag kind-${kind}" title="סיווג אוטומטי לפי מבנה הרעש, עלול לטעות${hint ? '. ' + hint : ''}${extra ? '. ' + escapeHtml(extra) : ''}">${KIND_LABEL[kind]}${q}${scoreTxt}</span>`;
+  }
   function renderBulkBar() {
     const n = selectedIds.size; $('#bulkBar').hidden = !n; $('#bulkCount').textContent = n;
   }
@@ -565,7 +575,7 @@
           <div class="ev-meta">
             <span title="רמת שיא (סולם יחסי)">שיא <b>${disp(e.peakDb).toFixed(0)}</b></span>
             <span title="אורך הקליפ כולל השניות שלפני ואחרי">${fmtDur(e.durationSec)}</span>
-            ${kindTag(e.kind, e.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '')}
+            ${kindTag(e.kind, e.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '', e)}
             ${e.truncated ? '<span class="tag">קטוע</span>' : ''}
             ${e.merged > 1 ? `<span class="tag" title="כמה רעשים ברצף שאוחדו לאירוע אחד">אוחד מ-${e.merged}</span>` : ''}
             ${e.source === 'file' ? `<span class="tag file" title="${escapeHtml(e.sourceName || '')} @ ${fmtHms(e.offsetSec)}">מקובץ</span>` : ''}
@@ -1026,7 +1036,7 @@
         <label class="rev-main">
           <input type="checkbox" data-act="sel" ${r.selected ? 'checked' : ''}>
           <span class="ev-time"><span class="ltr">${fmtTime(ts)}</span><small class="ltr">${fmtDate(ts)}</small></span>
-          <span class="ev-meta">שיא <b>${disp(r.peakDb).toFixed(0)}</b> · ${fmtDur(r.endSec - r.startSec)} ${kindTag(r.kind, [r.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '', segText(r.cls)].filter(Boolean).join('. '))}${r.truncated ? '<span class="tag">קטוע</span>' : ''}${r.merged > 1 ? `<span class="tag" title="כמה רעשים ברצף שאוחדו לאירוע אחד">אוחד מ-${r.merged}</span>` : ''}</span>
+          <span class="ev-meta">שיא <b>${disp(r.peakDb).toFixed(0)}</b> · ${fmtDur(r.endSec - r.startSec)} ${kindTag(r.kind, [r.rhythmic ? 'רעש מחזורי (כמו נשימות)' : '', segText(r.cls)].filter(Boolean).join('. '), r.cls ? { dragScore: r.cls.dragScore, uncertain: r.cls.uncertain } : r)}${r.truncated ? '<span class="tag">קטוע</span>' : ''}${r.merged > 1 ? `<span class="tag" title="כמה רעשים ברצף שאוחדו לאירוע אחד">אוחד מ-${r.merged}</span>` : ''}</span>
         </label>
         <button class="btn small" data-act="play" title="האזן">▶</button>
         <div class="rev-label">${labelControl(r)}</div>
@@ -1067,7 +1077,7 @@
     const saveOne = async (e, samples, sampleRate) => {
       const rec = {
         startTs: Math.round(startMs + e.startSec * 1000), noiseTs: Math.round(startMs + e.noiseSec * 1000), endTs: Math.round(startMs + e.endSec * 1000),
-        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind, rhythmic: !!e.rhythmic, merged: e.merged || 1, label: e.label || '', labels: labelsOf(e), labelText: e.labelText || '',
+        durationSec: e.endSec - e.startSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate, truncated: e.truncated, note: '', kind: e.kind, rhythmic: !!e.rhythmic, merged: e.merged || 1, dragScore: e.cls && typeof e.cls.dragScore === 'number' ? e.cls.dragScore : null, uncertain: !!(e.cls && e.cls.uncertain), label: e.label || '', labels: labelsOf(e), labelText: e.labelText || '',
         sessionId: importId, source: 'file', sourceName: imp.file.name, offsetSec: e.noiseSec, blob: encodeWav(samples, sampleRate),
         uid: uuid(), deviceId: dev.deviceId, deviceName: dev.deviceName, updatedAt: Date.now(),
       };
@@ -1267,13 +1277,13 @@
   function driveClipName(e, dev) { return `${fmtStamp(e.noiseTs)}_${sanitizeName(e.deviceName || dev.deviceName) || 'device'}_${String(e.uid).slice(0, 6)}.wav`; }
   function indexEntryOf(e) {
     return { uid: e.uid, noiseTs: e.noiseTs, startTs: e.startTs, endTs: e.endTs, durationSec: e.durationSec, peakDb: e.peakDb, avgDb: e.avgDb, sampleRate: e.sampleRate, truncated: !!e.truncated,
-      kind: e.kind || '', note: e.note || '', label: e.label || '', labels: labelsOf(e), labelText: e.labelText || '', source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0,
+      kind: e.kind || '', dragScore: typeof e.dragScore === 'number' ? e.dragScore : null, uncertain: !!e.uncertain, note: e.note || '', label: e.label || '', labels: labelsOf(e), labelText: e.labelText || '', source: e.source || 'mic', sourceName: e.sourceName || '', offsetSec: e.offsetSec || 0,
       deviceId: e.deviceId || '', deviceName: e.deviceName || '', fileId: e.driveFileId || '', fileName: e.driveFileName || '', updatedAt: e.updatedAt || 0,
       timeCorrected: !!e.timeCorrected, originalNoiseTs: e.originalNoiseTs };
   }
   function indexCsv(list) {
     const head = ['תאריך', 'שעת תחילת הרעש', 'משך הקליפ (שניות)', 'רמת שיא', 'רמה ממוצעת', 'סיווג אוטומטי', 'תיוג ידני', 'הערה', 'מקור', 'היסט בהקלטה המקורית', 'מכשיר', 'קובץ ב-Drive'];
-    const rows = list.map((x) => [fmtDate(x.noiseTs), fmtTimeMs(x.noiseTs), (x.durationSec || 0).toFixed(1), disp(x.peakDb).toFixed(1), disp(x.avgDb).toFixed(1), KIND_LABEL[x.kind] || '', labelText(x), x.note || '', x.source === 'file' ? x.sourceName : 'מיקרופון', x.source === 'file' ? fmtHms(x.offsetSec) : '', x.deviceName || '', x.fileName || '']);
+    const rows = list.map((x) => [fmtDate(x.noiseTs), fmtTimeMs(x.noiseTs), (x.durationSec || 0).toFixed(1), disp(x.peakDb).toFixed(1), disp(x.avgDb).toFixed(1), kindCsv(x), labelText(x), x.note || '', x.source === 'file' ? x.sourceName : 'מיקרופון', x.source === 'file' ? fmtHms(x.offsetSec) : '', x.deviceName || '', x.fileName || '']);
     return '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
   async function syncDrive() {
