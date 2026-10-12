@@ -6,7 +6,7 @@
   const $$ = (s) => Array.from(document.querySelectorAll(s));
 
   // ---------- הגדרות ----------
-  const DEFAULTS = { threshold: 55, pre: 3, tail: 3, maxClip: 120, sampleRate: 16000, keepAwake: true, skipSpeech: false, skipBreath: false, detectBand: 'full', deviceName: '', deviceId: '', driveFolder: 'יומן רעש', googleClientId: '' };
+  const DEFAULTS = { threshold: 55, pre: 3, tail: 3, maxClip: 120, sampleRate: 16000, keepAwake: true, skipSpeech: false, skipBreath: false, detectBand: 'full', dragThr: null, deviceName: '', deviceId: '', driveFolder: 'יומן רעש', googleClientId: '' };
   const SETTINGS_KEY = 'noise-log-settings-v1';
   const settings = loadSettings();
 
@@ -416,13 +416,14 @@
   let currentFilter = 'all';
   let kindFilter = null; let eventSort = 'time';
   function filteredEvents() {
-    return events.filter((e) => (currentFilter === 'all' || nightKey(e.noiseTs) === currentFilter) && kindFilter.has(e.kind || 'unknown'));
+    return events.filter((e) => (currentFilter === 'all' || nightKey(e.noiseTs) === currentFilter) && kindFilter.has(effectiveKind(e)));
   }
   function renderKindFilter() {
     const box = $('#kindFilter'); if (!box) return;
     const inNight = events.filter((e) => currentFilter === 'all' || nightKey(e.noiseTs) === currentFilter);
-    const counts = {}; for (const e of inNight) { const k = e.kind || 'unknown'; counts[k] = (counts[k] || 0) + 1; }
+    const counts = {}; for (const e of inNight) { const k = effectiveKind(e); counts[k] = (counts[k] || 0) + 1; }
     box.innerHTML = KIND_ORDER.filter((k) => counts[k]).map((k) => `<button type="button" class="chip kind-chip ${kindFilter.has(k) ? 'on' : ''}" data-kind="${k}">${KIND_LABEL[k]} <b>${counts[k]}</b></button>`).join('');
+    renderDragThr('dragThrEvents', inNight);
   }
   function renderNightFilter() {
     const sel = $('#nightFilter');
@@ -544,8 +545,52 @@
     container._player = player;
     return player;
   }
+  // ---------- סף ציון גרירה ----------
+  // הגדרת תצוגה (settings.dragThr; null = אוטומטי, המסווג מחליט). כשיש סף, כל אירוע בלי דפיקות שיש לו ציון גרירה
+  // מוצג כ"גרירה" אם הציון מעל הסף, וכ"נשימה" אם מתחת, גם אם המסווג החליט אחרת. כך "הצג גרירות, הסתר נשימות" נשלט בסף אחד.
+  const SCORED = new Set(['drag', 'breath', 'noise']);
+  function scoreOf(e) { return typeof e.dragScore === 'number' ? e.dragScore : (e.cls && typeof e.cls.dragScore === 'number' ? e.cls.dragScore : null); }
+  function effectiveKind(e) {
+    const k = e.kind || 'unknown'; const thr = settings.dragThr; const sc = scoreOf(e);
+    if (thr === null || thr === undefined || sc === null || !SCORED.has(k)) return k;
+    return sc >= thr ? 'drag' : (k === 'drag' ? 'breath' : k);
+  }
+  // מחוון עם היסטוגרמה: כמה אירועים (שיש להם ציון) יושבים בכל מדרגה של 5%, צבועים לפי מה שהמסווג אמר,
+  // כדי לראות כמה יתווספו או יירדו בכל הזזה של הסף. items: אירועים או שורות סקירה
+  function renderDragThr(boxId, items) {
+    const box = $('#' + boxId); if (!box) return;
+    if (!box.querySelector('.dt-range')) {
+      box.innerHTML = `<div class="row" style="justify-content:space-between;gap:6px"><span class="muted">סף ציון גרירה: <b class="dt-val"></b></span><button type="button" class="btn small dt-auto" title="המסווג מחליט לבד מה גרירה ומה נשימה">אוטומטי</button></div>
+        <canvas class="dt-hist" dir="ltr" aria-label="כמה אירועים בכל ציון גרירה"></canvas>
+        <input type="range" class="dt-range" min="0" max="100" step="5" title="מעל הסף: מוצג כגרירה. מתחת: נשימה">
+        <div class="muted dt-info"></div>`;
+      box.querySelector('.dt-range').addEventListener('input', (e) => { settings.dragThr = Number(e.target.value); saveSettings(); onDragThrChanged(); });
+      box.querySelector('.dt-auto').addEventListener('click', () => { settings.dragThr = null; saveSettings(); onDragThrChanged(); });
+    }
+    const thr = settings.dragThr; const scored = items.filter((e) => scoreOf(e) !== null && SCORED.has(e.kind || 'unknown'));
+    const buckets = Array.from({ length: 21 }, () => ({ drag: 0, breath: 0, noise: 0 }));
+    for (const e of scored) buckets[Math.min(20, Math.floor(scoreOf(e) / 5))][e.kind]++;
+    const maxN = Math.max(1, ...buckets.map((b) => b.drag + b.breath + b.noise));
+    const c = box.querySelector('.dt-hist'); const W = Math.max(200, c.clientWidth || 300), H = 44, dpr = Math.min(3, window.devicePixelRatio || 1);
+    c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); c.style.height = `${H}px`; const g = c.getContext('2d'); g.scale(dpr, dpr);
+    g.fillStyle = '#0b1220'; g.fillRect(0, 0, W, H);
+    const bw = W / 21, colors = { drag: 'rgba(167,139,250,.9)', breath: 'rgba(148,163,184,.8)', noise: 'rgba(100,116,139,.8)' };
+    buckets.forEach((b, i) => { let y = H - 12; for (const k of ['drag', 'noise', 'breath']) { const h = (b[k] / maxN) * (H - 16); if (!h) continue; g.fillStyle = colors[k]; g.fillRect(i * bw + 1, y - h, bw - 2, h); y -= h; } });
+    g.fillStyle = '#94a3b8'; g.font = '10px system-ui'; g.textAlign = 'center'; for (const v of [0, 25, 50, 75, 100]) g.fillText(`${v}%`, Math.min(W - 12, Math.max(12, (v / 100) * W)), H - 2);
+    if (thr !== null && thr !== undefined) { g.fillStyle = '#f59e0b'; g.fillRect((thr / 100) * W - 1, 0, 2, H - 12); }
+    const range = box.querySelector('.dt-range'); range.value = thr === null || thr === undefined ? 100 : thr; range.classList.toggle('auto', thr === null || thr === undefined);
+    box.querySelector('.dt-val').textContent = thr === null || thr === undefined ? 'אוטומטי (המסווג מחליט)' : `${thr}%`;
+    const asDrag = scored.filter((e) => effectiveKind(e) === 'drag').length, autoDrag = scored.filter((e) => e.kind === 'drag').length;
+    const added = scored.filter((e) => e.kind !== 'drag' && effectiveKind(e) === 'drag').length, removed = scored.filter((e) => e.kind === 'drag' && effectiveKind(e) !== 'drag').length;
+    box.querySelector('.dt-info').textContent = thr === null || thr === undefined
+      ? `${autoDrag} גרירות לפי המסווג, ${scored.length - autoDrag} נשימות/רעש רציף עם ציון. גרור את המחוון כדי להציג כגרירה כל מה שמעל ציון מסוים; כל עמודה = אירועים באותה מדרגה של 5%.`
+      : `מעל ${thr}%: ${asDrag} גרירות${added ? ` (+${added} שהמסווג קרא נשימה/רעש)` : ''}${removed ? ` (−${removed} גרירות של המסווג שירדו לנשימה)` : ''}.`;
+  }
+  function onDragThrChanged() { renderEvents(); if (imp && imp.review) renderReview(); }
+
   // e: אירוע/שורת סקירה עם dragScore ו-uncertain (אופציונלי). "גרירה?" = גרירה לא ודאית; האחוז = ציון גרירה (כמה הרצף דומה לגרירה אמיתית)
   function kindTag(kind, extra, e) {
+    const auto = kind; if (e) { const ek = effectiveKind(Object.assign({ kind }, e)); if (ek !== kind) { kind = ek; extra = `${extra ? extra + '. ' : ''}המסווג אמר "${KIND_LABEL[auto]}"; מוצג כ"${KIND_LABEL[ek]}" לפי סף ציון הגרירה`; } }
     if (!KIND_LABEL[kind]) return '';
     const q = (kind === 'drag' && e && e.uncertain) || (kind === 'breath' && extra && /מחזורי/.test(extra)) ? '?' : '';
     const score = e && typeof e.dragScore === 'number' && ['drag', 'breath', 'noise', 'bangdrag'].includes(kind) ? e.dragScore : null;
@@ -1013,15 +1058,16 @@
   }
   function visibleReview() {
     const f = imp.filter || { kinds: new Set(KIND_ORDER), minLevel: 0, sort: 'time' };
-    const list = imp.review.map((r, i) => ({ r, i })).filter(({ r }) => f.kinds.has(r.kind || 'unknown') && disp(r.peakDb) >= f.minLevel);
+    const list = imp.review.map((r, i) => ({ r, i })).filter(({ r }) => f.kinds.has(effectiveKind(r)) && disp(r.peakDb) >= f.minLevel);
     list.sort((a, b) => (f.sort === 'level' ? b.r.peakDb - a.r.peakDb || a.r.noiseSec - b.r.noiseSec : a.r.noiseSec - b.r.noiseSec));
     return list;
   }
   function renderReviewFilters() {
     const f = imp.filter; const counts = {};
-    for (const r of imp.review) { const k = r.kind || 'unknown'; counts[k] = (counts[k] || 0) + 1; }
+    for (const r of imp.review) { const k = effectiveKind(r); counts[k] = (counts[k] || 0) + 1; }
     $('#revKinds').innerHTML = KIND_ORDER.filter((k) => counts[k]).map((k) => `<button type="button" class="chip kind-chip ${f.kinds.has(k) ? 'on' : ''}" data-kind="${k}">${KIND_LABEL[k]} <b>${counts[k]}</b></button>`).join('');
     $('#revMinLevelVal').textContent = f.minLevel;
+    renderDragThr('dragThrReview', imp.review);
   }
   function renderReview() {
     if (!imp.filter) imp.filter = { kinds: new Set(KIND_ORDER), minLevel: 0, sort: 'time' };
@@ -1048,7 +1094,7 @@
   }
   function updateReviewSummary() {
     const sel = imp.review.filter((r) => r.selected).length;
-    const speech = imp.review.filter((r) => r.kind === 'speech').length, breath = imp.review.filter((r) => r.kind === 'breath').length;
+    const speech = imp.review.filter((r) => r.kind === 'speech').length, breath = imp.review.filter((r) => effectiveKind(r) === 'breath').length;
     $('#impSelCount').textContent = sel; $('#impSaveBtn').disabled = !sel;
     $('#impReviewSummary').textContent = `${imp.review.length} אירועים, ${sel} מסומנים לשמירה${breath ? `. ${breath} נראים כנשימות או רעש מחזורי` : ''}${speech ? `. ${speech} נשמעים כדיבור` : ''}${breath || speech ? ' (מסומנים בתג, אפשר לבטל את סימונם בלחיצה)' : ''}.`;
   }
@@ -1193,7 +1239,7 @@
     $('#impSelAll').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { r.selected = true; }); renderReview(); });
     $('#impSelNone').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { r.selected = false; }); renderReview(); });
     $('#impSelNoSpeech').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { if (r.kind === 'speech') r.selected = false; }); renderReview(); });
-    $('#impSelNoBreath').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { if (r.kind === 'breath') r.selected = false; }); renderReview(); });
+    $('#impSelNoBreath').addEventListener('click', () => { if (!imp || !imp.review) return; imp.review.forEach((r) => { if (effectiveKind(r) === 'breath') r.selected = false; }); renderReview(); });
     $('#impSelShown').addEventListener('click', () => { if (!imp || !imp.review) return; for (const { r } of visibleReview()) r.selected = true; renderReview(); });
     $('#impClearShown').addEventListener('click', () => { if (!imp || !imp.review) return; for (const { r } of visibleReview()) r.selected = false; renderReview(); });
     $('#revKinds').addEventListener('click', (e) => { const b = e.target.closest('button[data-kind]'); if (!b || !imp || !imp.review) return; const k = b.dataset.kind; if (imp.filter.kinds.has(k)) imp.filter.kinds.delete(k); else imp.filter.kinds.add(k); renderReview(); });
@@ -1471,7 +1517,7 @@
   }
 
   // חשיפה לבדיקות אוטומטיות
-  window.__noiseLog = { get events() { return events; }, get monitoring() { return monitoring; }, get importState() { return imp; }, settings, eventsCsv, makeZip, dbGetAll, Detector, disp, syncDrive, drive, get syncing() { return syncing; }, importBatches, exportForAnalysis, LABELS, LABEL_EXPECT };
+  window.__noiseLog = { get events() { return events; }, get monitoring() { return monitoring; }, get importState() { return imp; }, settings, eventsCsv, makeZip, dbGetAll, Detector, disp, syncDrive, drive, get syncing() { return syncing; }, importBatches, exportForAnalysis, LABELS, LABEL_EXPECT, effectiveKind, setDragThr: (v) => { settings.dragThr = v; saveSettings(); onDragThrChanged(); } };
 
   init();
 })();

@@ -150,6 +150,18 @@ const localMs = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h - 3, mi, s); //
     await page.click('#impSelNoBreath');
     assert((await page.evaluate(() => window.__noiseLog.importState.review.filter((r) => r.selected).length)) === 2, 'breath: "deselect breaths" leaves bang + drag selected');
     // סינון תצוגה: הסתרת נשימות
+    // סף ציון גרירה: ב-0% כל מה שיש לו ציון מוצג כגרירה, ב"אוטומטי" חוזרים לסיווג
+    {
+      const before = await page.evaluate(() => window.__noiseLog.importState.review.map((r) => window.__noiseLog.effectiveKind(r)));
+      await page.evaluate(() => { const r = document.querySelector('#dragThrReview .dt-range'); r.value = '0'; r.dispatchEvent(new Event('input')); });
+      const at0 = await page.evaluate(() => window.__noiseLog.importState.review.map((r) => window.__noiseLog.effectiveKind(r)));
+      const scored = await page.evaluate(() => window.__noiseLog.importState.review.filter((r) => r.cls && typeof r.cls.dragScore === 'number' && ['drag', 'breath', 'noise'].includes(r.kind)).length);
+      assert(scored > 0 && at0.filter((k) => k === 'drag').length === scored && before.filter((k) => k === 'drag').length < scored, `drag threshold 0%: all ${scored} scored events shown as drag (was ${before.filter((k) => k === 'drag').length})`);
+      assert(/\+\d+ שהמסווג קרא/.test(await page.$eval('#dragThrReview .dt-info', (el) => el.textContent)) && (await page.$eval('#revKinds button[data-kind="drag"] b', (el) => Number(el.textContent))) === scored, 'drag threshold: info text and drag chip count follow the threshold');
+      await page.click('#dragThrReview .dt-auto');
+      const back = await page.evaluate(() => window.__noiseLog.importState.review.map((r) => window.__noiseLog.effectiveKind(r)));
+      assert(JSON.stringify(back) === JSON.stringify(before) && /אוטומטי/.test(await page.$eval('#dragThrReview .dt-val', (el) => el.textContent)), 'drag threshold: "auto" restores the classifier decision');
+    }
     await page.click('#revKinds button[data-kind="breath"]');
     assert((await page.$$eval('#impReviewList li.rev', (els) => els.length)) === 2 && (await page.$eval('#revShown', (el) => el.textContent)) === '2', 'breath: kind filter hides breaths from the list');
     // מיון לפי רמה: הדפיקה ראשונה
