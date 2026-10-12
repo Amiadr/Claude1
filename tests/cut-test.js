@@ -33,9 +33,21 @@ const localMs = (y, mo, d, h, mi, s) => new Date(y, mo - 1, d, h, mi, s).getTime
   await page.waitForFunction(() => !document.querySelector('#cutWork').hidden, null, { timeout: 20000 });
   assert((await page.inputValue('#cutDate')) === '2026-09-26' && /^23:00(:00)?$/.test(await page.inputValue('#cutTime')), `wav: start time from file name (${await page.inputValue('#cutDate')} ${await page.inputValue('#cutTime')})`);
   assert((await page.inputValue('#cutPrefix')) === 'night', `wav: default name prefix without the date (${await page.inputValue('#cutPrefix')})`);
+  // ברירת מחדל: כל הקובץ, הכפתור פעיל בלי לגעת בכלום
+  assert((await page.inputValue('#cutFrom')) === '23:00:00' && (await page.inputValue('#cutTo')) === '23:00:40' && !(await page.$eval('#cutGoBtn', (b) => b.disabled)) && /כל הקובץ/.test(await page.$eval('#cutSelInfo', (el) => el.textContent)), `wav: default range is the whole file (${await page.inputValue('#cutFrom')}–${await page.inputValue('#cutTo')})`);
+  // X דקות מנקודה: מהשעה 23:00:10, משך 0.25 דקות → עד 23:00:25
   await page.fill('#cutFrom', '23:00:10'); await page.dispatchEvent('#cutFrom', 'change');
-  await page.fill('#cutTo', '23:00:25'); await page.dispatchEvent('#cutTo', 'change');
-  assert(/23:00:10 עד 23:00:25/.test(await page.$eval('#cutSelInfo', (el) => el.textContent)) && !(await page.$eval('#cutGoBtn', (b) => b.disabled)), 'wav: selection shown and cut button enabled');
+  assert((await page.inputValue('#cutTo')) === '23:00:40', 'wav: editing the start keeps the end at the end of the file');
+  await page.fill('#cutLen', '0.25'); await page.dispatchEvent('#cutLen', 'change');
+  assert((await page.inputValue('#cutTo')) === '23:00:25' && /23:00:10 עד 23:00:25/.test(await page.$eval('#cutSelInfo', (el) => el.textContent)), `wav: duration 0.25 min sets the end to 23:00:25 (${await page.inputValue('#cutTo')})`);
+  // לפי זמן בקובץ: אותו טווח מוצג כהיסטים, ושינוי ההתחלה שם שומר על המשך
+  await page.check('input[name="cutRef"][value="offset"]');
+  assert((await page.inputValue('#cutFrom')) === '00:00:10' && (await page.inputValue('#cutTo')) === '00:00:25', `wav: offset mode shows 00:00:10–00:00:25 (${await page.inputValue('#cutFrom')}–${await page.inputValue('#cutTo')})`);
+  await page.fill('#cutFrom', '00:00:05'); await page.dispatchEvent('#cutFrom', 'change');
+  assert((await page.inputValue('#cutTo')) === '00:00:20' && /23:00:05 עד 23:00:20/.test(await page.$eval('#cutSelInfo', (el) => el.textContent)), `wav: offset start 00:00:05 with 0.25 min → 00:00:20 (${await page.inputValue('#cutTo')})`);
+  await page.check('input[name="cutRef"][value="clock"]');
+  await page.fill('#cutFrom', '23:00:10'); await page.dispatchEvent('#cutFrom', 'change');
+  assert((await page.inputValue('#cutTo')) === '23:00:25' && /23:00:10 עד 23:00:25/.test(await page.$eval('#cutSelInfo', (el) => el.textContent)) && !(await page.$eval('#cutGoBtn', (b) => b.disabled)), 'wav: back to clock mode, 23:00:10–23:00:25 selected');
   let [dl] = await Promise.all([page.waitForEvent('download', { timeout: 60000 }), page.click('#cutGoBtn')]);
   let out = path.join(outDir, dl.suggestedFilename()); await dl.saveAs(out);
   assert(dl.suggestedFilename() === '2026-09-26_23-00-10_night.wav', `wav: piece name carries its start time (${dl.suggestedFilename()})`);
@@ -48,7 +60,7 @@ const localMs = (y, mo, d, h, mi, s) => new Date(y, mo - 1, d, h, mi, s).getTime
     assert(NS.dateFromName(dl.suggestedFilename()).getTime() === localMs(2026, 9, 26, 23, 0, 10), 'wav: the app would read the piece start from its name');
   }
   // לחיצות על ציר הזמן קובעות התחלה וסיום
-  await page.fill('#cutFrom', ''); await page.fill('#cutTo', ''); await page.dispatchEvent('#cutTo', 'change');
+  await page.fill('#cutLen', ''); await page.fill('#cutFrom', ''); await page.fill('#cutTo', ''); await page.dispatchEvent('#cutTo', 'change');
   const box = await page.$eval('#cutTimeline', (c) => { const r = c.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; });
   await page.mouse.click(box.x + box.w * 0.25, box.y + box.h / 2); await page.mouse.click(box.x + box.w * 0.5, box.y + box.h / 2);
   const selTxt = await page.$eval('#cutSelInfo', (el) => el.textContent);
