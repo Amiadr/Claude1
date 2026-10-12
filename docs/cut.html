@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="description" content="חיתוך הקלטה ארוכה לחלקים קטנים בדפדפן, עם שמירה על הזמן המקורי של כל חלק.">
+<title>חיתוך הקלטה – יומן רעש לילי</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  :root { --bg: #0f172a; --panel: #1e293b; --panel2: #263449; --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8; --warn: #f59e0b; --err: #ef4444; --border: #334155; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 16px; line-height: 1.45; }
+  body { padding: 0 16px calc(24px + env(safe-area-inset-bottom)); max-width: 720px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 6px; }
+  h1 { font-size: 1.35rem; margin: 0; }
+  a { color: var(--accent); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin: 12px 0; }
+  .card h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  .ltr { direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); font-size: .9rem; }
+  .btn { appearance: none; border: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 12px 18px; border-radius: 12px; font-size: 1rem; cursor: pointer; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.primary { background: var(--accent); color: #082f49; border-color: transparent; font-weight: 700; }
+  .btn.small { padding: 8px 12px; font-size: .9rem; border-radius: 10px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .row.top { margin-top: 12px; }
+  .field { padding: 8px 0; border-bottom: 1px dashed var(--border); }
+  .field:last-child { border-bottom: 0; }
+  .field label { color: var(--text); }
+  .field small { display: block; color: var(--muted); font-size: .82rem; }
+  .field input[type="number"], .field select, .field input[type="text"] { background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 1rem; }
+  .field input[type="number"] { width: 6em; }
+  .field input[type="text"] { width: 14em; max-width: 100%; }
+  .timepick { display: flex; gap: 10px; flex-wrap: wrap; }
+  .tp { display: flex; flex-direction: column; gap: 4px; font-size: .82rem; color: var(--muted); }
+  .tp input { background: #0b1220; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 1.05rem; direction: ltr; min-width: 9.5em; }
+  .radios { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+  .radios label { cursor: pointer; }
+  .radios input, .piece input { accent-color: var(--accent); width: 18px; height: 18px; vertical-align: middle; margin-inline-end: 4px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { appearance: none; border: 1px solid var(--border); background: #0b1220; color: var(--muted); padding: 6px 10px; border-radius: 999px; font-size: .82rem; cursor: pointer; text-align: start; }
+  .bar { height: 10px; background: #0b1220; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; direction: ltr; }
+  #cutBar { height: 100%; width: 0; background: var(--accent); transition: width 150ms; }
+  .error { background: #7f1d1d; color: #fecaca; padding: 8px 10px; border-radius: 8px; font-size: .9rem; margin: 8px 0; }
+  .kv { margin: 10px 0 4px; word-break: break-all; }
+  #cutFile { width: 100%; color: var(--muted); }
+  #cutFile::file-selector-button { appearance: none; border: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 10px 14px; border-radius: 10px; font-size: .95rem; cursor: pointer; margin-inline-end: 10px; }
+  #cutTimeline { width: 100%; height: 96px; display: block; border-radius: 8px; border: 1px solid var(--border); margin: 8px 0; cursor: crosshair; }
+  #cutPieces, #cutDone { list-style: none; margin: 8px 0 0; padding: 0; }
+  .piece { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding: 8px 0; }
+  .piece.off { opacity: .55; }
+  .piece label { cursor: pointer; }
+  #cutDone li { border-top: 1px solid var(--border); padding: 6px 0; font-size: .9rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>✂️ חיתוך הקלטה</h1>
+  <a href="./" class="muted">← לאפליקציה</a>
+</header>
+
+<section class="card">
+  <h2>הקובץ</h2>
+  <p class="muted" style="margin:0 0 10px">הקלטה של לילה שלם גדולה מדי לייבוא מהיר? חותכים אותה כאן לחלקים, במכשיר שלך, בלי להעלות לשום מקום. כל חלק נשמר כ-WAV עם התאריך והשעה המקוריים של תחילתו (בשם הקובץ ובתוך הקובץ), כך שבייבוא לאפליקציה הזמנים נשארים נכונים.</p>
+  <input type="file" id="cutFile" accept="audio/*,video/mp4,.m4a,.mp4,.aac,.mp3,.wav">
+  <div id="cutError" class="error" hidden></div>
+  <div id="cutInfo" hidden>
+    <div class="kv"><b id="cutName"></b><div class="muted"><span id="cutFormat"></span> · אורך <span id="cutDuration" class="ltr"></span></div></div>
+    <div class="field">
+      <label>זמן ההקלטה <small id="cutStartSrc"></small></label>
+      <div class="timepick">
+        <label class="tp"><span>תאריך</span><input id="cutDate" type="date"></label>
+        <label class="tp"><span>שעה (שעה:דקה:שנייה)</span><input id="cutTime" type="time" step="1"></label>
+      </div>
+      <div class="radios">
+        <label><input type="radio" name="cutMode" id="cutModeStart" value="start" checked> זה זמן <b>תחילת</b> ההקלטה</label>
+        <label><input type="radio" name="cutMode" id="cutModeEnd" value="end"> זה זמן <b>סיום</b> ההקלטה</label>
+      </div>
+      <div id="cutRange" class="muted" style="margin-top:6px"></div>
+      <div id="cutCandidates" class="chips"></div>
+    </div>
+    <div class="field">
+      <div class="row">
+        <label>פלט: <select id="cutRate"><option value="16000" selected>16 kHz (מומלץ, קובץ קטן)</option><option value="" id="cutRateOrig">מקורי</option></select></label>
+        <label>שם: <input id="cutPrefix" type="text" placeholder="night"></label>
+      </div>
+      <small>כל חלק: WAV מונו 16 ביט. שם הקובץ מתחיל בתאריך ובשעה של תחילת החלק, למשל <span class="ltr">2026-09-01_23-58-52_night.wav</span>. 16 kHz מספיק לזיהוי (המסווג עובד ב-8 kHz) ונותן כ-115 MB לשעה.</small>
+    </div>
+  </div>
+</section>
+
+<section class="card" id="cutWork" hidden>
+  <h2>מה לחתוך</h2>
+  <div class="row">
+    <button id="cutScanBtn" class="btn small">🔍 סרוק (ציר זמן ואירועים, לא חובה)</button>
+    <span id="cutScanInfo" class="muted">בלי סריקה אפשר לחתוך לפי שעות; הסריקה מציירת את רמת הרעש ומאפשרת לדלג על חלקים שקטים.</span>
+  </div>
+  <div id="cutProgress" hidden style="margin-top:10px"><div class="bar"><div id="cutBar"></div></div><div id="cutProgText" class="muted"></div></div>
+  <canvas id="cutTimeline" dir="ltr" aria-label="ציר זמן של ההקלטה"></canvas>
+  <div class="radios" style="margin:0 0 8px">
+    <label><input type="radio" name="cutKind" value="manual" checked> חלק אחד לפי שעות</label>
+    <label><input type="radio" name="cutKind" value="split"> פיצול לחלקים שווים</label>
+  </div>
+  <div id="cutManual">
+    <div class="timepick">
+      <label class="tp"><span>מהשעה</span><input id="cutFrom" type="time" step="1"></label>
+      <label class="tp"><span>עד השעה</span><input id="cutTo" type="time" step="1"></label>
+    </div>
+    <div id="cutSelInfo" class="muted" style="margin-top:6px"></div>
+    <div class="row top"><button id="cutGoBtn" class="btn primary" disabled>✂️ חתוך והורד</button></div>
+  </div>
+  <div id="cutSplit" hidden>
+    <div class="row">
+      <label>אורך כל חלק (דקות): <input id="cutPieceMin" type="number" min="0.1" step="0.1" max="600" value="30" style="width:5em;background:#0b1220;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px"></label>
+      <label><input id="cutOnlyEvents" type="checkbox" checked style="accent-color:var(--accent);width:18px;height:18px;vertical-align:middle"> לסמן רק חלקים שיש בהם אירועים (אחרי סריקה)</label>
+    </div>
+    <div id="cutPiecesInfo" class="muted" style="margin-top:6px"></div>
+    <ul id="cutPieces"></ul>
+    <div class="row top"><button id="cutAllBtn" class="btn primary" disabled>⬇ חתוך והורד את כל המסומנים</button><span class="muted">הדפדפן עשוי לבקש אישור להורדת כמה קבצים.</span></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>חלקים שנחתכו</h2>
+  <ul id="cutDone"><li class="muted">עדיין לא נחתך כלום.</li></ul>
+  <p class="muted" style="margin:10px 0 0">אחר כך: באפליקציה, "ייבוא הקלטה קיימת", בוחרים את החלק. זמן ההתחלה נקרא משם הקובץ ומתוך הקובץ.</p>
+</section>
+
+<script src="scan.js"></script>
+<script src="cut.js"></script>
+</body>
+</html>

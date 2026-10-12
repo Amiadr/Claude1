@@ -196,60 +196,9 @@
     flush() { if (this.active) this.finish(this.active, true); if (this.held) this.emit(this.held); }
   }
 
-  // ---------- WAV ----------
-  function encodeWav(f32, sr) {
-    const n = f32.length;
-    const buf = new ArrayBuffer(44 + n * 2);
-    const v = new DataView(buf);
-    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-    w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE');
-    w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-    w(36, 'data'); v.setUint32(40, n * 2, true);
-    let o = 44;
-    for (let i = 0; i < n; i++, o += 2) {
-      const s = Math.max(-1, Math.min(1, f32[i]));
-      v.setInt16(o, s < 0 ? s * 32768 : s * 32767, true);
-    }
-    return new Blob([buf], { type: 'audio/wav' });
-  }
-
-  // ---------- ZIP (store only, ללא דחיסה – WAV ממילא לא נדחס טוב) ----------
-  const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[i] = c >>> 0; } return t; })();
-  function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
-  function dosDateTime(d) {
-    return { time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
-             date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() };
-  }
-  async function makeZip(files) {
-    const enc = new TextEncoder();
-    const parts = [], central = [];
-    let offset = 0;
-    for (const f of files) {
-      const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(await f.data.arrayBuffer());
-      const name = enc.encode(f.name);
-      const crc = crc32(data);
-      const { time, date } = dosDateTime(f.date || new Date());
-      const lh = new DataView(new ArrayBuffer(30));
-      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
-      lh.setUint16(10, time, true); lh.setUint16(12, date, true); lh.setUint32(14, crc, true);
-      lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
-      parts.push(lh.buffer, name, data);
-      const ch = new DataView(new ArrayBuffer(46));
-      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true);
-      ch.setUint16(12, time, true); ch.setUint16(14, date, true); ch.setUint32(16, crc, true);
-      ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, name.length, true);
-      ch.setUint16(30, 0, true); ch.setUint16(32, 0, true); ch.setUint16(34, 0, true); ch.setUint16(36, 0, true); ch.setUint32(38, 0, true); ch.setUint32(42, offset, true);
-      central.push(ch.buffer, name);
-      offset += 30 + name.length + data.length;
-    }
-    const cdSize = central.reduce((a, b) => a + b.byteLength, 0);
-    const eocd = new DataView(new ArrayBuffer(22));
-    eocd.setUint32(0, 0x06054b50, true); eocd.setUint16(4, 0, true); eocd.setUint16(6, 0, true);
-    eocd.setUint16(8, files.length, true); eocd.setUint16(10, files.length, true);
-    eocd.setUint32(12, cdSize, true); eocd.setUint32(16, offset, true); eocd.setUint16(20, 0, true);
-    return new Blob([...parts, ...central, eocd.buffer], { type: 'application/zip' });
-  }
+  // WAV ו-ZIP: המימושים המשותפים ב-scan.js
+  const encodeWav = (samples, sr, opts) => NoiseScan.encodeWav(samples, sr, opts);
+  const makeZip = (files) => NoiseScan.makeZip(files);
 
   // ---------- CSV ----------
   function csvCell(v) { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
